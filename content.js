@@ -1,4 +1,4 @@
-// ==== 核心修复：将全局的 let 全部改为 var 以兼容热注入 ====
+// ==== 全局变量 ====
 var isDrawing = false;
 var canvas, ctx;
 var points = [];
@@ -6,7 +6,22 @@ var startX = 0, startY = 0, currentX = 0, currentY = 0;
 var lastX = 0, lastY = 0;
 var currentTool = 'pencil'; // 'pencil' or 'rect'
 
-// 移除之前的同名监听器，防止多重绑定（热注入常见优化）
+// ==== 核心修复 1：全局监听 ESC 按键 ====
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        // 1. 如果正在画圈/框选，直接取消
+        if (document.getElementById('wordmap-canvas')) {
+            cleanupCanvas();
+        }
+        // 2. 如果结果卡片正在显示，直接关闭
+        var card = document.getElementById('wordmap-result-card');
+        if (card) {
+            card.remove();
+        }
+    }
+});
+
+// 移除之前的同名监听器，防止热注入多重绑定
 if (window.wordmapMessageListener) {
     chrome.runtime.onMessage.removeListener(window.wordmapMessageListener);
 }
@@ -113,25 +128,33 @@ function draw(e) {
 async function stopDrawing(e) {
     isDrawing = false;
     var minX, minY, width, height;
+    var padding = 12; // 增加统一的安全留白，防止切掉边缘字母
 
     if (currentTool === 'pencil') {
         ctx.closePath();
         if (points.length < 5) { cleanupCanvas(); return; }
-        minX = Math.min(...points.map(p => p.x));
-        var maxX = Math.max(...points.map(p => p.x));
-        minY = Math.min(...points.map(p => p.y));
-        var maxY = Math.max(...points.map(p => p.y));
-        var padding = 10;
-        minX = Math.max(0, minX - padding);
-        minY = Math.max(0, minY - padding);
-        width = Math.min(window.innerWidth - minX, (maxX - minX) + padding * 2);
-        height = Math.min(window.innerHeight - minY, (maxY - minY) + padding * 2);
+        var pMinX = Math.min(...points.map(p => p.x));
+        var pMaxX = Math.max(...points.map(p => p.x));
+        var pMinY = Math.min(...points.map(p => p.y));
+        var pMaxY = Math.max(...points.map(p => p.y));
+
+        minX = Math.max(0, pMinX - padding);
+        minY = Math.max(0, pMinY - padding);
+        width = Math.min(window.innerWidth - minX, (pMaxX - pMinX) + padding * 2);
+        height = Math.min(window.innerHeight - minY, (pMaxY - pMinY) + padding * 2);
     } else {
-        minX = Math.min(startX, currentX);
-        minY = Math.min(startY, currentY);
-        width = Math.abs(currentX - startX);
-        height = Math.abs(currentY - startY);
-        if (width < 10 || height < 10) { cleanupCanvas(); return; }
+        var rMinX = Math.min(startX, currentX);
+        var rMaxX = Math.max(startX, currentX);
+        var rMinY = Math.min(startY, currentY);
+        var rMaxY = Math.max(startY, currentY);
+
+        if ((rMaxX - rMinX) < 10 || (rMaxY - rMinY) < 10) { cleanupCanvas(); return; }
+
+        // 给矩形框选也强制增加留白 padding
+        minX = Math.max(0, rMinX - padding);
+        minY = Math.max(0, rMinY - padding);
+        width = Math.min(window.innerWidth - minX, (rMaxX - rMinX) + padding * 2);
+        height = Math.min(window.innerHeight - minY, (rMaxY - rMinY) + padding * 2);
     }
 
     lastX = e.clientX + window.scrollX;
@@ -147,14 +170,19 @@ async function stopDrawing(e) {
         }
         var img = new Image();
         img.onload = () => {
+            // ==== 核心修复 2：彻底抛弃 devicePixelRatio，使用实际图像的真实比例，完美免疫网页缩放干扰 ====
+            var scaleX = img.width / window.innerWidth;
+            var scaleY = img.height / window.innerHeight;
+
             var cropCanvas = document.createElement('canvas');
-            var dpr = window.devicePixelRatio || 1;
-            cropCanvas.width = width * dpr;
-            cropCanvas.height = height * dpr;
+            cropCanvas.width = width * scaleX;
+            cropCanvas.height = height * scaleY;
             var cropCtx = cropCanvas.getContext('2d');
+
+            // 精准裁剪
             cropCtx.drawImage(
                 img,
-                minX * dpr, minY * dpr, width * dpr, height * dpr,
+                minX * scaleX, minY * scaleY, width * scaleX, height * scaleY,
                 0, 0, cropCanvas.width, cropCanvas.height
             );
             var croppedBase64 = cropCanvas.toDataURL('image/jpeg');
@@ -170,6 +198,7 @@ function cleanupCanvas() {
         canvas.remove();
         canvas = null;
     }
+    isDrawing = false;
 }
 
 function getOrCreateCard(x, y) {
@@ -215,6 +244,7 @@ function getOrCreateCard(x, y) {
         document.addEventListener('mouseup', onMouseUp);
 
         const closeHandler = (e) => {
+            // 防止点击卡片内部或者拖拽手柄时关闭
             if (!card.contains(e.target)) {
                 card.remove();
                 document.removeEventListener('mousedown', closeHandler);
