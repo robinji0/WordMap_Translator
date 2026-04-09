@@ -1,696 +1,503 @@
 (() => {
-    let isDrawing = false;
-    let canvas = null;
-    let ctx = null;
-    let points = [];
-    let startX = 0;
-    let startY = 0;
-    let currentX = 0;
-    let currentY = 0;
-    let lastX = 0;
-    let lastY = 0;
-    let currentTool = 'pencil';
-    let currentUiLang = WordMapI18n.detectBrowserUiLang();
-    let cardAutoCloseTimer = null;
+  let isDrawing = false;
+  let canvas = null;
+  let ctx = null;
+  let points = [];
+  let startX = 0;
+  let startY = 0;
+  let currentX = 0;
+  let currentY = 0;
+  let lastX = 24;
+  let lastY = 24;
+  let currentTool = 'pencil';
+  let currentUiLang = WordMapI18n.getEffectiveUiLang();
+  let cardAutoCloseTimer = null;
 
-    loadStoredUiLang();
+  chrome.storage.local.get(['uiLang'], (stored) => {
+    currentUiLang = WordMapI18n.getEffectiveUiLang(stored.uiLang);
+    updateDynamicCopy();
+  });
 
-    if (window.wordmapEscListener) {
-        document.removeEventListener('keydown', window.wordmapEscListener);
+  if (window.wordmapEscListener) {
+    document.removeEventListener('keydown', window.wordmapEscListener);
+  }
+  window.wordmapEscListener = handleEscKeydown;
+  document.addEventListener('keydown', window.wordmapEscListener);
+
+  if (window.wordmapRuntimeListener) {
+    chrome.runtime.onMessage.removeListener(window.wordmapRuntimeListener);
+  }
+  window.wordmapRuntimeListener = handleRuntimeMessage;
+  chrome.runtime.onMessage.addListener(window.wordmapRuntimeListener);
+
+  if (window.wordmapStorageListener) {
+    chrome.storage.onChanged.removeListener(window.wordmapStorageListener);
+  }
+  window.wordmapStorageListener = handleStorageChange;
+  chrome.storage.onChanged.addListener(window.wordmapStorageListener);
+
+  function handleStorageChange(changes, areaName) {
+    if (areaName === 'local' && changes.uiLang) {
+      currentUiLang = WordMapI18n.getEffectiveUiLang(changes.uiLang.newValue);
+      updateDynamicCopy();
     }
-    window.wordmapEscListener = handleEscKeydown;
-    document.addEventListener('keydown', window.wordmapEscListener);
+  }
 
-    if (window.wordmapMessageListener) {
-        chrome.runtime.onMessage.removeListener(window.wordmapMessageListener);
-    }
-    window.wordmapMessageListener = handleRuntimeMessage;
-    chrome.runtime.onMessage.addListener(window.wordmapMessageListener);
+  function handleEscKeydown(event) {
+    if (event.key !== 'Escape') return;
+    cleanupCanvas();
+    removeCard();
+  }
 
-    if (window.wordmapStorageListener) {
-        chrome.storage.onChanged.removeListener(window.wordmapStorageListener);
-    }
-    window.wordmapStorageListener = handleStorageChange;
-    chrome.storage.onChanged.addListener(window.wordmapStorageListener);
-
-    function loadStoredUiLang() {
-        chrome.storage.local.get(['uiLang'], (result) => {
-            currentUiLang = WordMapI18n.getEffectiveUiLang(result.uiLang);
-            updateCardStaticCopy();
-            updateDrawHintCopy();
-        });
-    }
-
-    function handleStorageChange(changes, areaName) {
-        if (areaName === 'local' && changes.uiLang) {
-            currentUiLang = WordMapI18n.getEffectiveUiLang(changes.uiLang.newValue);
-            updateCardStaticCopy();
-            updateDrawHintCopy();
-        }
-    }
-
-    function handleEscKeydown(event) {
-        if (event.key !== 'Escape') {
-            return;
-        }
-
-        if (document.getElementById('wordmap-canvas')) {
-            cleanupCanvas();
-        }
-
-        removeCard();
+  function handleRuntimeMessage(request, sender, sendResponse) {
+    if (request.uiLang) {
+      currentUiLang = WordMapI18n.getEffectiveUiLang(request.uiLang);
     }
 
-    function handleRuntimeMessage(request, sender, sendResponse) {
-        if (request.uiLang) {
-            currentUiLang = WordMapI18n.getEffectiveUiLang(request.uiLang);
-        }
-
-        if (request.action === 'toggle_draw') {
-            toggleDrawMode(request.mode || 'pencil');
-            sendResponse({ status: 'ok' });
-        } else if (request.action === 'show_status') {
-            showStatusCard(
-                {
-                    title: request.title,
-                    detail: request.detail,
-                    state: request.state || 'progress'
-                },
-                lastX,
-                lastY
-            );
-        } else if (request.action === 'show_result') {
-            renderResult(request.data, lastX, lastY, request.ocrText || '');
-        } else if (request.action === 'update_status') {
-            showStatusCard(
-                {
-                    title: request.message,
-                    detail: '',
-                    state: 'progress'
-                },
-                lastX,
-                lastY
-            );
-        } else if (request.action === 'show_error') {
-            showStatusCard(
-                {
-                    title: WordMapI18n.t(currentUiLang, 'errorTitle'),
-                    detail: request.message,
-                    state: 'error'
-                },
-                lastX,
-                lastY
-            );
-        }
-
-        return true;
+    if (request.action === 'toggle_draw') {
+      toggleDrawMode(request.mode || 'pencil');
+      sendResponse({ status: 'ok' });
+      return true;
     }
 
-    function toggleDrawMode(mode) {
-        currentTool = mode;
-
-        if (document.getElementById('wordmap-canvas')) {
-            cleanupCanvas();
-            return;
-        }
-
-        removeCard();
-
-        canvas = document.createElement('canvas');
-        canvas.id = 'wordmap-canvas';
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-        canvas.style.position = 'fixed';
-        canvas.style.top = '0';
-        canvas.style.left = '0';
-        canvas.style.width = '100vw';
-        canvas.style.height = '100vh';
-        canvas.style.zIndex = '999998';
-        canvas.style.cursor = 'crosshair';
-
-        ctx = canvas.getContext('2d');
-        initializeCanvasLook();
-
-        document.body.appendChild(canvas);
-        document.body.classList.add('wordmap-drawing-mode');
-        showDrawHint();
-
-        canvas.addEventListener('mousedown', startDrawing);
-        canvas.addEventListener('mousemove', draw);
-        canvas.addEventListener('mouseup', stopDrawing);
+    if (request.action === 'show_status') {
+      showStatusCard(request.title, request.detail, request.state || 'progress', lastX, lastY);
+      return true;
     }
 
-    function initializeCanvasLook() {
-        if (currentTool === 'rect') {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.28)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            return;
-        }
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.strokeStyle = '#2563eb';
-        ctx.lineWidth = 3;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.setLineDash([]);
+    if (request.action === 'show_error') {
+      showStatusCard(WordMapI18n.t(currentUiLang, 'errorTitle'), request.message, 'error', lastX, lastY);
+      return true;
     }
 
-    function startDrawing(event) {
-        isDrawing = true;
-        startX = event.clientX;
-        startY = event.clientY;
-        currentX = startX;
-        currentY = startY;
-
-        if (currentTool === 'pencil') {
-            points = [];
-            ctx.beginPath();
-            ctx.moveTo(event.clientX, event.clientY);
-            points.push({ x: event.clientX, y: event.clientY });
-        }
+    if (request.action === 'show_result') {
+      renderResult(request.data, request.ocrText || '', lastX, lastY);
+      return true;
     }
 
-    function draw(event) {
-        if (!isDrawing) {
-            return;
-        }
+    return true;
+  }
 
-        currentX = event.clientX;
-        currentY = event.clientY;
-
-        if (currentTool === 'pencil') {
-            ctx.lineTo(currentX, currentY);
-            ctx.stroke();
-            points.push({ x: currentX, y: currentY });
-            return;
-        }
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.28)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        const rectX = Math.min(startX, currentX);
-        const rectY = Math.min(startY, currentY);
-        const rectW = Math.abs(currentX - startX);
-        const rectH = Math.abs(currentY - startY);
-
-        ctx.clearRect(rectX, rectY, rectW, rectH);
-        ctx.strokeStyle = '#7c3aed';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([8, 6]);
-        ctx.strokeRect(rectX, rectY, rectW, rectH);
+  function toggleDrawMode(mode) {
+    currentTool = mode;
+    if (canvas) {
+      cleanupCanvas();
+      return;
     }
 
-    function stopDrawing(event) {
-        isDrawing = false;
+    removeCard();
+    canvas = document.createElement('canvas');
+    canvas.id = 'wordmap-canvas';
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    Object.assign(canvas.style, {
+      position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh', zIndex: '999998', cursor: 'crosshair'
+    });
+    ctx = canvas.getContext('2d');
+    setupCanvasAppearance();
+    document.body.appendChild(canvas);
+    document.body.classList.add('wordmap-drawing-mode');
+    showDrawHint();
 
-        let minX;
-        let minY;
-        let width;
-        let height;
-        const padding = 12;
+    canvas.addEventListener('mousedown', startDrawing);
+    canvas.addEventListener('mousemove', draw);
+    canvas.addEventListener('mouseup', stopDrawing);
+  }
 
-        if (currentTool === 'pencil') {
-            ctx.closePath();
-            if (points.length < 5) {
-                cleanupCanvas();
-                return;
-            }
+  function setupCanvasAppearance() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (currentTool === 'rect') {
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.22)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    } else {
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.setLineDash([]);
+    }
+  }
 
-            const pMinX = Math.min(...points.map((point) => point.x));
-            const pMaxX = Math.max(...points.map((point) => point.x));
-            const pMinY = Math.min(...points.map((point) => point.y));
-            const pMaxY = Math.max(...points.map((point) => point.y));
+  function startDrawing(event) {
+    isDrawing = true;
+    startX = event.clientX;
+    startY = event.clientY;
+    currentX = startX;
+    currentY = startY;
 
-            minX = Math.max(0, pMinX - padding);
-            minY = Math.max(0, pMinY - padding);
-            width = Math.min(window.innerWidth - minX, pMaxX - pMinX + padding * 2);
-            height = Math.min(window.innerHeight - minY, pMaxY - pMinY + padding * 2);
-        } else {
-            const rMinX = Math.min(startX, currentX);
-            const rMaxX = Math.max(startX, currentX);
-            const rMinY = Math.min(startY, currentY);
-            const rMaxY = Math.max(startY, currentY);
+    if (currentTool === 'pencil') {
+      points = [{ x: startX, y: startY }];
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+    }
+  }
 
-            if (rMaxX - rMinX < 10 || rMaxY - rMinY < 10) {
-                cleanupCanvas();
-                return;
-            }
+  function draw(event) {
+    if (!isDrawing) return;
+    currentX = event.clientX;
+    currentY = event.clientY;
 
-            minX = Math.max(0, rMinX - padding);
-            minY = Math.max(0, rMinY - padding);
-            width = Math.min(window.innerWidth - minX, rMaxX - rMinX + padding * 2);
-            height = Math.min(window.innerHeight - minY, rMaxY - rMinY + padding * 2);
-        }
+    if (currentTool === 'pencil') {
+      ctx.lineTo(currentX, currentY);
+      ctx.stroke();
+      points.push({ x: currentX, y: currentY });
+      return;
+    }
 
-        lastX = event.clientX + window.scrollX;
-        lastY = event.clientY + window.scrollY;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.22)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    const rectX = Math.min(startX, currentX);
+    const rectY = Math.min(startY, currentY);
+    const rectW = Math.abs(currentX - startX);
+    const rectH = Math.abs(currentY - startY);
+
+    ctx.clearRect(rectX, rectY, rectW, rectH);
+    ctx.strokeStyle = '#7c3aed';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([7, 5]);
+    ctx.strokeRect(rectX, rectY, rectW, rectH);
+  }
+
+  function stopDrawing(event) {
+    if (!isDrawing) return;
+    isDrawing = false;
+
+    const padding = 12;
+    let minX = 0, minY = 0, width = 0, height = 0;
+
+    if (currentTool === 'pencil') {
+      ctx.closePath();
+      if (points.length < 5) {
         cleanupCanvas();
-        showStatusCard(
-            {
-                title: WordMapI18n.t(currentUiLang, 'statusPreparingCaptureTitle'),
-                detail: WordMapI18n.t(currentUiLang, 'statusPreparingCaptureDetail'),
-                state: 'progress'
-            },
-            lastX,
-            lastY
+        return;
+      }
+      const xs = points.map((p) => p.x);
+      const ys = points.map((p) => p.y);
+      const pMinX = Math.min(...xs);
+      const pMaxX = Math.max(...xs);
+      const pMinY = Math.min(...ys);
+      const pMaxY = Math.max(...ys);
+      minX = Math.max(0, pMinX - padding);
+      minY = Math.max(0, pMinY - padding);
+      width = Math.min(window.innerWidth - minX, (pMaxX - pMinX) + padding * 2);
+      height = Math.min(window.innerHeight - minY, (pMaxY - pMinY) + padding * 2);
+    } else {
+      const rMinX = Math.min(startX, currentX);
+      const rMaxX = Math.max(startX, currentX);
+      const rMinY = Math.min(startY, currentY);
+      const rMaxY = Math.max(startY, currentY);
+      if ((rMaxX - rMinX) < 10 || (rMaxY - rMinY) < 10) {
+        cleanupCanvas();
+        return;
+      }
+      minX = Math.max(0, rMinX - padding);
+      minY = Math.max(0, rMinY - padding);
+      width = Math.min(window.innerWidth - minX, (rMaxX - rMinX) + padding * 2);
+      height = Math.min(window.innerHeight - minY, (rMaxY - rMinY) + padding * 2);
+    }
+
+    lastX = Math.min(window.innerWidth - 40, event.clientX + 16);
+    lastY = Math.min(window.innerHeight - 40, event.clientY + 16);
+
+    cleanupCanvas();
+    showStatusCard(
+      WordMapI18n.t(currentUiLang, 'statusPreparingCaptureTitle'),
+      WordMapI18n.t(currentUiLang, 'statusPreparingCaptureDetail'),
+      'progress',
+      lastX,
+      lastY
+    );
+
+    chrome.runtime.sendMessage({ action: 'capture_tab' }, (response) => {
+      if (!response || response.error || !response.dataUrl) {
+        showStatusCard(WordMapI18n.t(currentUiLang, 'errorTitle'), WordMapI18n.t(currentUiLang, 'errorCaptureFailed'), 'error', lastX, lastY);
+        return;
+      }
+
+      const image = new Image();
+      image.onload = () => {
+        const scaleX = image.width / window.innerWidth;
+        const scaleY = image.height / window.innerHeight;
+        const cropCanvas = document.createElement('canvas');
+        cropCanvas.width = Math.max(1, Math.round(width * scaleX));
+        cropCanvas.height = Math.max(1, Math.round(height * scaleY));
+        const cropCtx = cropCanvas.getContext('2d');
+        cropCtx.drawImage(
+          image,
+          minX * scaleX,
+          minY * scaleY,
+          width * scaleX,
+          height * scaleY,
+          0,
+          0,
+          cropCanvas.width,
+          cropCanvas.height
         );
 
-        chrome.runtime.sendMessage({ action: 'capture_tab' }, (response) => {
-            if (!response || response.error || !response.dataUrl) {
-                showStatusCard(
-                    {
-                        title: WordMapI18n.t(currentUiLang, 'errorTitle'),
-                        detail: WordMapI18n.t(currentUiLang, 'errorCaptureFailed'),
-                        state: 'error'
-                    },
-                    lastX,
-                    lastY
-                );
-                return;
-            }
+        showStatusCard(
+          WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
+          WordMapI18n.t(currentUiLang, 'statusUploadingDetail'),
+          'progress',
+          lastX,
+          lastY
+        );
 
-            const image = new Image();
-            image.onload = () => {
-                const scaleX = image.width / window.innerWidth;
-                const scaleY = image.height / window.innerHeight;
+        chrome.runtime.sendMessage({ action: 'process_image', imageBase64: cropCanvas.toDataURL('image/jpeg') });
+      };
+      image.src = response.dataUrl;
+    });
+  }
 
-                const cropCanvas = document.createElement('canvas');
-                cropCanvas.width = Math.max(1, Math.round(width * scaleX));
-                cropCanvas.height = Math.max(1, Math.round(height * scaleY));
-                const cropCtx = cropCanvas.getContext('2d');
+  function cleanupCanvas() {
+    removeDrawHint();
+    document.body.classList.remove('wordmap-drawing-mode');
+    if (canvas) {
+      canvas.remove();
+      canvas = null;
+    }
+    points = [];
+    isDrawing = false;
+  }
 
-                cropCtx.drawImage(
-                    image,
-                    minX * scaleX,
-                    minY * scaleY,
-                    width * scaleX,
-                    height * scaleY,
-                    0,
-                    0,
-                    cropCanvas.width,
-                    cropCanvas.height
-                );
+  function showDrawHint() {
+    let hint = document.getElementById('wordmap-draw-hint');
+    if (!hint) {
+      hint = document.createElement('div');
+      hint.id = 'wordmap-draw-hint';
+      document.body.appendChild(hint);
+    }
+    const isRect = currentTool === 'rect';
+    hint.innerHTML = `
+      <div class="wordmap-draw-hint-badge">${isRect ? WordMapI18n.t(currentUiLang, 'drawModeBadgeRect') : WordMapI18n.t(currentUiLang, 'drawModeBadgeFreehand')}</div>
+      <div class="wordmap-draw-hint-title">${isRect ? WordMapI18n.t(currentUiLang, 'drawHintRectTitle') : WordMapI18n.t(currentUiLang, 'drawHintPencilTitle')}</div>
+      <div class="wordmap-draw-hint-desc">${isRect ? WordMapI18n.t(currentUiLang, 'drawHintRectDesc') : WordMapI18n.t(currentUiLang, 'drawHintPencilDesc')} ${WordMapI18n.t(currentUiLang, 'drawHintFooter')}</div>
+    `;
+  }
 
-                showStatusCard(
-                    {
-                        title: WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
-                        detail: WordMapI18n.t(currentUiLang, 'statusUploadingDetail'),
-                        state: 'progress'
-                    },
-                    lastX,
-                    lastY
-                );
+  function removeDrawHint() {
+    const hint = document.getElementById('wordmap-draw-hint');
+    if (hint) hint.remove();
+  }
 
-                chrome.runtime.sendMessage({
-                    action: 'process_image',
-                    imageBase64: cropCanvas.toDataURL('image/jpeg')
-                });
-            };
-            image.src = response.dataUrl;
-        });
+  function getOrCreateCard(x, y) {
+    clearCardAutoCloseTimer();
+    let card = document.getElementById('wordmap-result-card');
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'wordmap-result-card';
+      card.innerHTML = `
+        <div class="wordmap-card-header">
+          <div class="wordmap-card-brand">
+            <div class="wordmap-card-logo">WM</div>
+            <div class="wordmap-card-brand-meta">
+              <div class="wordmap-card-title">WordMap</div>
+              <div class="wordmap-card-subtitle" data-role="subtitle"></div>
+            </div>
+          </div>
+          <div class="wordmap-card-tools">
+            <div class="wordmap-drag-pill" data-role="drag-pill"></div>
+            <button class="wordmap-card-close" data-role="close" type="button">×</button>
+          </div>
+        </div>
+        <div id="wordmap-card-content"></div>
+      `;
+      document.body.appendChild(card);
+      installCardDrag(card, card.querySelector('.wordmap-card-header'));
+      card.querySelector('[data-role="close"]').addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        removeCard();
+      });
+      document.addEventListener('mousedown', handleOutsideClick, true);
     }
 
-    function cleanupCanvas() {
-        removeDrawHint();
-        document.body.classList.remove('wordmap-drawing-mode');
-        if (canvas) {
-            canvas.remove();
-            canvas = null;
-        }
-        isDrawing = false;
-        points = [];
+    updateDynamicCopy();
+    positionCard(card, x, y);
+    return { card, content: document.getElementById('wordmap-card-content') };
+  }
+
+  function installCardDrag(card, handle) {
+    let dragging = false;
+    let startClientX = 0;
+    let startClientY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    handle.addEventListener('mousedown', (event) => {
+      if (event.target.closest('.wordmap-card-close')) return;
+      dragging = true;
+      startClientX = event.clientX;
+      startClientY = event.clientY;
+      startLeft = card.offsetLeft;
+      startTop = card.offsetTop;
+      event.preventDefault();
+    });
+
+    const onMove = (event) => {
+      if (!dragging) return;
+      const left = startLeft + (event.clientX - startClientX);
+      const top = startTop + (event.clientY - startClientY);
+      card.style.left = `${clamp(left, 12, window.innerWidth - card.offsetWidth - 12)}px`;
+      card.style.top = `${clamp(top, 12, window.innerHeight - card.offsetHeight - 12)}px`;
+    };
+
+    const onUp = () => { dragging = false; };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    card._cleanupFns = [
+      () => document.removeEventListener('mousemove', onMove),
+      () => document.removeEventListener('mouseup', onUp)
+    ];
+  }
+
+  function handleOutsideClick(event) {
+    const card = document.getElementById('wordmap-result-card');
+    if (card && !card.contains(event.target)) removeCard();
+  }
+
+  function updateDynamicCopy() {
+    const card = document.getElementById('wordmap-result-card');
+    if (!card) return;
+    const subtitle = card.querySelector('[data-role="subtitle"]');
+    const dragPill = card.querySelector('[data-role="drag-pill"]');
+    const closeButton = card.querySelector('[data-role="close"]');
+    if (subtitle) subtitle.textContent = WordMapI18n.t(currentUiLang, 'cardBrandSubtitle');
+    if (dragPill) dragPill.textContent = WordMapI18n.t(currentUiLang, 'cardSubtitle');
+    if (closeButton) {
+      const label = WordMapI18n.t(currentUiLang, 'closeButtonAria');
+      closeButton.setAttribute('aria-label', label);
+      closeButton.title = label;
+    }
+  }
+
+  function positionCard(card, x, y) {
+    const width = Math.min(760, window.innerWidth - 24);
+    card.style.width = `${width}px`;
+    const left = x + width + 20 > window.innerWidth ? window.innerWidth - width - 12 : x;
+    card.style.left = `${clamp(left, 12, window.innerWidth - width - 12)}px`;
+    requestAnimationFrame(() => {
+      const height = card.offsetHeight || 320;
+      const top = y + height + 12 > window.innerHeight ? window.innerHeight - height - 12 : y;
+      card.style.top = `${clamp(top, 12, window.innerHeight - height - 12)}px`;
+    });
+  }
+
+  function showStatusCard(title, detail, state, x, y) {
+    const { content } = getOrCreateCard(x, y);
+    content.innerHTML = `
+      <div class="wordmap-status ${state === 'error' ? 'wordmap-status--error' : ''}">
+        <div class="wordmap-status-visual">
+          ${state === 'error' ? '<div class="wordmap-status-error-icon">×</div>' : '<div class="wordmap-status-spinner"></div>'}
+        </div>
+        <div class="wordmap-status-copy">
+          <div class="wordmap-status-title">${escapeHtml(title)}</div>
+          <div class="wordmap-status-detail">${escapeHtml(detail || '')}</div>
+        </div>
+      </div>
+    `;
+
+    if (state === 'error') {
+      clearCardAutoCloseTimer();
+      cardAutoCloseTimer = window.setTimeout(removeCard, 5000);
+    }
+  }
+
+  function renderResult(data, ocrText, x, y) {
+    const { content } = getOrCreateCard(x, y);
+    const fullTranslation = (data && typeof data === 'object') ? (data.full_translation || data.translation || '') : '';
+    const wordPairs = Array.isArray(data) ? data : ((data && Array.isArray(data.words)) ? data.words : []);
+
+    if (!fullTranslation && wordPairs.length === 0) {
+      showStatusCard(WordMapI18n.t(currentUiLang, 'errorTitle'), WordMapI18n.t(currentUiLang, 'resultEmpty'), 'error', x, y);
+      return;
     }
 
-    function showDrawHint() {
-        let hint = document.getElementById('wordmap-draw-hint');
-        if (!hint) {
-            hint = document.createElement('div');
-            hint.id = 'wordmap-draw-hint';
-            document.body.appendChild(hint);
-        }
-        updateDrawHintCopy();
+    content.innerHTML = '';
+    const grid = document.createElement('div');
+    grid.className = 'wordmap-result-grid';
+
+    if (ocrText) {
+      const section = createSection(WordMapI18n.t(currentUiLang, 'resultSectionDetectedText'));
+      const text = document.createElement('div');
+      text.className = 'wordmap-ocr-text';
+      text.textContent = ocrText;
+      section.appendChild(text);
+      grid.appendChild(section);
     }
 
-    function updateDrawHintCopy() {
-        const hint = document.getElementById('wordmap-draw-hint');
-        if (!hint) {
-            return;
-        }
-
-        const isRect = currentTool === 'rect';
-        const title = isRect
-            ? WordMapI18n.t(currentUiLang, 'drawHintRectTitle')
-            : WordMapI18n.t(currentUiLang, 'drawHintPencilTitle');
-        const description = isRect
-            ? WordMapI18n.t(currentUiLang, 'drawHintRectDesc')
-            : WordMapI18n.t(currentUiLang, 'drawHintPencilDesc');
-        const badge = isRect
-            ? WordMapI18n.t(currentUiLang, 'drawModeBadgeRect')
-            : WordMapI18n.t(currentUiLang, 'drawModeBadgeFreehand');
-
-        hint.innerHTML = '';
-
-        const badgeElement = document.createElement('div');
-        badgeElement.className = 'wordmap-draw-hint-badge';
-        badgeElement.textContent = badge;
-
-        const titleElement = document.createElement('div');
-        titleElement.className = 'wordmap-draw-hint-title';
-        titleElement.textContent = title;
-
-        const descriptionElement = document.createElement('div');
-        descriptionElement.className = 'wordmap-draw-hint-desc';
-        descriptionElement.textContent = `${description} ${WordMapI18n.t(currentUiLang, 'drawHintFooter')}`;
-
-        hint.appendChild(badgeElement);
-        hint.appendChild(titleElement);
-        hint.appendChild(descriptionElement);
+    if (fullTranslation) {
+      const section = createSection(WordMapI18n.t(currentUiLang, 'resultSectionTranslation'));
+      const text = document.createElement('div');
+      text.className = 'wordmap-full-translation';
+      text.textContent = fullTranslation;
+      section.appendChild(text);
+      grid.appendChild(section);
     }
 
-    function removeDrawHint() {
-        const hint = document.getElementById('wordmap-draw-hint');
-        if (hint) {
-            hint.remove();
-        }
+    if (wordPairs.length > 0) {
+      const section = createSection(WordMapI18n.t(currentUiLang, 'resultSectionGlossary'));
+      section.classList.add('wordmap-section--full');
+      const list = document.createElement('div');
+      list.className = 'wordmap-words-container';
+      wordPairs.forEach((pair) => {
+        const chip = document.createElement('div');
+        chip.className = 'word-pair';
+        const src = document.createElement('div');
+        src.className = 'word-en';
+        src.textContent = pair.src || pair.en || pair.text || pair.original || '—';
+        const dst = document.createElement('div');
+        dst.className = 'word-zh';
+        dst.textContent = pair.dst || pair.zh || pair.translation || pair.Chinese || WordMapI18n.t(currentUiLang, 'resultNoGloss');
+        chip.appendChild(src);
+        chip.appendChild(dst);
+        list.appendChild(chip);
+      });
+      section.appendChild(list);
+      grid.appendChild(section);
     }
 
-    function getOrCreateCard(x, y) {
-        clearCardAutoCloseTimer();
-        let card = document.getElementById('wordmap-result-card');
-        if (!card) {
-            card = document.createElement('div');
-            card.id = 'wordmap-result-card';
+    content.appendChild(grid);
+  }
 
-            const header = document.createElement('div');
-            header.className = 'wordmap-card-header wordmap-drag-handle';
+  function createSection(titleText) {
+    const section = document.createElement('section');
+    section.className = 'wordmap-section';
+    const title = document.createElement('div');
+    title.className = 'wordmap-section-title';
+    title.textContent = titleText;
+    section.appendChild(title);
+    return section;
+  }
 
-            const brand = document.createElement('div');
-            brand.className = 'wordmap-card-brand';
-
-            const logo = document.createElement('div');
-            logo.className = 'wordmap-card-logo';
-            logo.textContent = 'WM';
-
-            const brandText = document.createElement('div');
-            brandText.className = 'wordmap-card-brand-text';
-
-            const title = document.createElement('div');
-            title.className = 'wordmap-card-title';
-            title.textContent = 'WordMap';
-
-            const subtitle = document.createElement('div');
-            subtitle.className = 'wordmap-card-subtitle';
-            subtitle.dataset.role = 'subtitle';
-
-            brandText.appendChild(title);
-            brandText.appendChild(subtitle);
-            brand.appendChild(logo);
-            brand.appendChild(brandText);
-
-            const closeButton = document.createElement('button');
-            closeButton.type = 'button';
-            closeButton.className = 'wordmap-card-close';
-            closeButton.dataset.role = 'close';
-            closeButton.textContent = '×';
-            closeButton.addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                removeCard();
-            });
-
-            header.appendChild(brand);
-            header.appendChild(closeButton);
-
-            const content = document.createElement('div');
-            content.id = 'wordmap-card-content';
-
-            card.appendChild(header);
-            card.appendChild(content);
-            document.body.appendChild(card);
-
-            installCardInteractions(card, header);
-        }
-
-        updateCardStaticCopy();
-        positionCard(card, x, y);
-        return {
-            card: card,
-            content: document.getElementById('wordmap-card-content')
-        };
+  function clearCardAutoCloseTimer() {
+    if (cardAutoCloseTimer) {
+      window.clearTimeout(cardAutoCloseTimer);
+      cardAutoCloseTimer = null;
     }
+  }
 
-    function installCardInteractions(card, handle) {
-        let isDraggingCard = false;
-        let dragStartX = 0;
-        let dragStartY = 0;
-        let initialLeft = 0;
-        let initialTop = 0;
+  function removeCard() {
+    clearCardAutoCloseTimer();
+    const card = document.getElementById('wordmap-result-card');
+    if (!card) return;
+    if (Array.isArray(card._cleanupFns)) card._cleanupFns.forEach((fn) => fn());
+    document.removeEventListener('mousedown', handleOutsideClick, true);
+    card.remove();
+  }
 
-        handle.addEventListener('mousedown', (event) => {
-            if (event.target.closest('.wordmap-card-close')) {
-                return;
-            }
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
 
-            isDraggingCard = true;
-            dragStartX = event.clientX;
-            dragStartY = event.clientY;
-            initialLeft = card.offsetLeft;
-            initialTop = card.offsetTop;
-            handle.style.cursor = 'grabbing';
-            event.preventDefault();
-        });
-
-        const onMouseMove = (event) => {
-            if (!isDraggingCard) {
-                return;
-            }
-
-            const dx = event.clientX - dragStartX;
-            const dy = event.clientY - dragStartY;
-            card.style.left = `${initialLeft + dx}px`;
-            card.style.top = `${initialTop + dy}px`;
-        };
-
-        const onMouseUp = () => {
-            isDraggingCard = false;
-            handle.style.cursor = 'grab';
-        };
-
-        const onOutsideMouseDown = (event) => {
-            if (!card.contains(event.target)) {
-                removeCard();
-            }
-        };
-
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-        const outsideClickTimer = window.setTimeout(() => {
-            document.addEventListener('mousedown', onOutsideMouseDown);
-        }, 80);
-
-        card._wordmapCleanupFns = [
-            () => window.clearTimeout(outsideClickTimer),
-            () => document.removeEventListener('mousemove', onMouseMove),
-            () => document.removeEventListener('mouseup', onMouseUp),
-            () => document.removeEventListener('mousedown', onOutsideMouseDown)
-        ];
-    }
-
-    function updateCardStaticCopy() {
-        const card = document.getElementById('wordmap-result-card');
-        if (!card) {
-            return;
-        }
-
-        const subtitle = card.querySelector('[data-role="subtitle"]');
-        const closeButton = card.querySelector('[data-role="close"]');
-        if (subtitle) {
-            subtitle.textContent = WordMapI18n.t(currentUiLang, 'cardSubtitle');
-        }
-        if (closeButton) {
-            closeButton.setAttribute('aria-label', WordMapI18n.t(currentUiLang, 'closeButtonAria'));
-            closeButton.setAttribute('title', WordMapI18n.t(currentUiLang, 'closeButtonAria'));
-        }
-    }
-
-    function clearCardAutoCloseTimer() {
-        if (cardAutoCloseTimer) {
-            window.clearTimeout(cardAutoCloseTimer);
-            cardAutoCloseTimer = null;
-        }
-    }
-
-    function removeCard() {
-        clearCardAutoCloseTimer();
-        const card = document.getElementById('wordmap-result-card');
-        if (!card) {
-            return;
-        }
-
-        if (Array.isArray(card._wordmapCleanupFns)) {
-            card._wordmapCleanupFns.forEach((cleanup) => cleanup());
-        }
-        card.remove();
-    }
-
-    function positionCard(card, x, y) {
-        requestAnimationFrame(() => {
-            const margin = 16;
-            const scrollLeft = window.scrollX;
-            const scrollTop = window.scrollY;
-            const cardWidth = card.offsetWidth || 420;
-            const cardHeight = card.offsetHeight || 240;
-            const idealLeft = x + 18;
-            const idealTop = y + 18;
-            const maxLeft = scrollLeft + window.innerWidth - cardWidth - margin;
-            const maxTop = scrollTop + window.innerHeight - cardHeight - margin;
-            const safeLeft = Math.max(scrollLeft + margin, Math.min(idealLeft, maxLeft));
-            const safeTop = Math.max(scrollTop + margin, Math.min(idealTop, maxTop));
-            card.style.left = `${safeLeft}px`;
-            card.style.top = `${safeTop}px`;
-        });
-    }
-
-    function showStatusCard(payload, x, y) {
-        const cardBundle = getOrCreateCard(x, y);
-        const content = cardBundle.content;
-        content.innerHTML = '';
-
-        const status = document.createElement('div');
-        status.className = `wordmap-status${payload.state === 'error' ? ' wordmap-status--error' : ''}`;
-
-        const iconWrapper = document.createElement('div');
-        iconWrapper.className = 'wordmap-status-visual';
-        if (payload.state === 'error') {
-            iconWrapper.textContent = '✕';
-            iconWrapper.classList.add('wordmap-status-error-icon');
-        } else {
-            const spinner = document.createElement('div');
-            spinner.className = 'wordmap-status-spinner';
-            iconWrapper.appendChild(spinner);
-        }
-
-        const copy = document.createElement('div');
-        copy.className = 'wordmap-status-copy';
-
-        const title = document.createElement('div');
-        title.className = 'wordmap-status-title';
-        title.textContent = payload.title;
-
-        copy.appendChild(title);
-
-        if (payload.detail) {
-            const detail = document.createElement('div');
-            detail.className = 'wordmap-status-detail';
-            detail.textContent = payload.detail;
-            copy.appendChild(detail);
-        }
-
-        status.appendChild(iconWrapper);
-        status.appendChild(copy);
-        content.appendChild(status);
-        positionCard(cardBundle.card, x, y);
-
-        if (payload.state === 'error') {
-            cardAutoCloseTimer = window.setTimeout(removeCard, 4200);
-        }
-    }
-
-    function renderResult(data, x, y, ocrText) {
-        const cardBundle = getOrCreateCard(x, y);
-        const content = cardBundle.content;
-        content.innerHTML = '';
-
-        let fullTranslation = '';
-        let wordPairs = [];
-
-        if (Array.isArray(data)) {
-            wordPairs = data;
-        } else if (data && typeof data === 'object') {
-            fullTranslation = data.full_translation || data.translation || '';
-            wordPairs = Array.isArray(data.words) ? data.words : [];
-        }
-
-        if (wordPairs.length === 0 && !fullTranslation) {
-            showStatusCard(
-                {
-                    title: WordMapI18n.t(currentUiLang, 'errorTitle'),
-                    detail: WordMapI18n.t(currentUiLang, 'resultEmpty'),
-                    state: 'error'
-                },
-                x,
-                y
-            );
-            return;
-        }
-
-        if (ocrText) {
-            const ocrSection = createSection(WordMapI18n.t(currentUiLang, 'resultSectionDetectedText'), '📝');
-            const textBlock = document.createElement('div');
-            textBlock.className = 'wordmap-ocr-text';
-            textBlock.textContent = ocrText;
-            ocrSection.appendChild(textBlock);
-            content.appendChild(ocrSection);
-        }
-
-        if (fullTranslation) {
-            const translationSection = createSection(WordMapI18n.t(currentUiLang, 'resultSectionTranslation'), '✨');
-            const fullText = document.createElement('div');
-            fullText.className = 'wordmap-full-translation';
-            fullText.textContent = fullTranslation;
-            translationSection.appendChild(fullText);
-            content.appendChild(translationSection);
-        }
-
-        if (wordPairs.length > 0) {
-            const wordsSection = createSection(WordMapI18n.t(currentUiLang, 'resultSectionGlossary'), '🔎');
-            const wordsContainer = document.createElement('div');
-            wordsContainer.className = 'wordmap-words-container';
-
-            wordPairs.forEach((pair) => {
-                const pairDiv = document.createElement('div');
-                pairDiv.className = 'word-pair';
-
-                const originalText = pair.src || pair.en || pair.text || pair.original || '???';
-                const translatedText =
-                    pair.dst ||
-                    pair.zh ||
-                    pair.translation ||
-                    pair.Chinese ||
-                    WordMapI18n.t(currentUiLang, 'resultNoGloss');
-
-                const sourceSpan = document.createElement('span');
-                sourceSpan.className = 'word-en';
-                sourceSpan.textContent = originalText;
-
-                const targetSpan = document.createElement('span');
-                targetSpan.className = 'word-zh';
-                targetSpan.textContent = translatedText;
-
-                pairDiv.appendChild(sourceSpan);
-                pairDiv.appendChild(targetSpan);
-                wordsContainer.appendChild(pairDiv);
-            });
-
-            wordsSection.appendChild(wordsContainer);
-            content.appendChild(wordsSection);
-        }
-
-        positionCard(cardBundle.card, x, y);
-    }
-
-    function createSection(titleText, icon) {
-        const section = document.createElement('section');
-        section.className = 'wordmap-section';
-
-        const title = document.createElement('div');
-        title.className = 'wordmap-section-title';
-        title.textContent = `${icon} ${titleText}`;
-
-        section.appendChild(title);
-        return section;
-    }
+  function escapeHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/\n/g, '<br>');
+  }
 })();

@@ -1,9 +1,8 @@
 {
   "manifest_version": 3,
-  "default_locale": "en",
-  "name": "__MSG_extensionName__",
-  "version": "1.1.1",
-  "description": "__MSG_extensionDescription__",
+  "name": "WordMap 圈选翻译",
+  "version": "1.3",
+  "description": "支持自由圈选与矩形框选，使用 OCR + AI 进行网页区域翻译。",
   "permissions": [
     "storage",
     "activeTab",
@@ -13,20 +12,8 @@
   "host_permissions": [
     "<all_urls>"
   ],
-  "icons": {
-    "16": "assets/icon16.png",
-    "32": "assets/icon32.png",
-    "48": "assets/icon48.png",
-    "128": "assets/icon128.png"
-  },
   "action": {
-    "default_popup": "popup.html",
-    "default_title": "__MSG_actionTitle__",
-    "default_icon": {
-      "16": "assets/icon16.png",
-      "32": "assets/icon32.png",
-      "48": "assets/icon48.png"
-    }
+    "default_popup": "popup.html"
   },
   "background": {
     "service_worker": "background.js"
@@ -51,14 +38,14 @@
         "default": "Alt+T",
         "mac": "Alt+T"
       },
-      "description": "__MSG_commandFreehand__"
+      "description": "开启/关闭自由圈选模式"
     },
     "toggle-rect-mode": {
       "suggested_key": {
         "default": "Alt+R",
         "mac": "Alt+R"
       },
-      "description": "__MSG_commandRectangle__"
+      "description": "开启/关闭矩形框选模式"
     }
   }
 }

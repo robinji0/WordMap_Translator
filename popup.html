@@ -1,134 +1,160 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WordMap</title>
-    <link rel="stylesheet" href="popup.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordMap</title>
+  <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-<main class="popup-shell">
+  <main class="popup-shell">
     <header class="topbar">
-        <div class="brand">
-            <img class="brand-logo" src="assets/logo.svg" alt="WordMap logo">
-            <div class="brand-copy">
-                <h1 class="brand-title" data-i18n="appTitleCompact"></h1>
-                <p class="brand-subtitle" data-i18n="appSubtitleCompact"></p>
-            </div>
+      <div class="brand">
+        <img class="brand-logo" src="assets/logo.svg" alt="WordMap logo">
+        <div class="brand-copy">
+          <h1 class="brand-title" data-i18n="appTitleCompact"></h1>
+          <p class="brand-subtitle" data-i18n="appSubtitleCompact"></p>
         </div>
+      </div>
 
-        <button id="uiLangToggle" class="lang-toggle" type="button">
-            <span class="lang-toggle-icon">🌐</span>
-            <span id="uiLangToggleText" class="lang-toggle-text">EN</span>
+      <div class="toolbar">
+        <button id="uiLangToggle" class="toolbar-btn toolbar-btn--lang" type="button" data-i18n-title="toolbarLanguage" data-i18n-aria="toolbarLanguage">
+          <svg class="toolbar-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M3 12h18"></path>
+            <path d="M12 3a14.5 14.5 0 0 1 0 18"></path>
+            <path d="M12 3a14.5 14.5 0 0 0 0 18"></path>
+          </svg>
+          <span id="uiLangToggleText"></span>
         </button>
+
+        <a id="sponsorBtn" class="toolbar-btn toolbar-btn--icon toolbar-btn--heart" href="https://www.paypal.com/paypalme/robin326753" target="_blank" rel="noreferrer" data-i18n-title="toolbarSponsor" data-i18n-aria="toolbarSponsor">
+          <svg class="toolbar-btn__icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 21s-6.8-4.35-9.18-8.08C.76 9.74 2 5.9 5.57 4.63c2.14-.76 4.12-.1 5.43 1.42 1.31-1.52 3.29-2.18 5.43-1.42C20 5.9 21.24 9.74 19.18 12.92 16.8 16.65 12 21 12 21Z"></path>
+          </svg>
+        </a>
+
+        <button id="shortcutBtn" class="toolbar-btn toolbar-btn--icon" type="button" data-i18n-title="toolbarShortcuts" data-i18n-aria="toolbarShortcuts">
+          <svg class="toolbar-btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3.5" y="6" width="17" height="12" rx="2.5"></rect>
+            <path d="M7 10h2"></path>
+            <path d="M11 10h2"></path>
+            <path d="M15 10h2"></path>
+            <path d="M7 14h10"></path>
+          </svg>
+        </button>
+      </div>
     </header>
 
-    <section class="panel panel--actions">
-        <div class="section-head section-head--compact">
-            <div>
-                <h2 data-i18n="sectionActionTitle"></h2>
-                <p data-i18n="sectionActionDescCompact"></p>
-            </div>
-            <button id="shortcutBtn" class="shortcut-chip" type="button" data-i18n="openShortcutsShort"></button>
-        </div>
-
-        <div class="tool-row">
-            <button id="drawPencilBtn" class="tool-btn" type="button">
-                <span class="tool-icon tool-icon--blue" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M4 20l3.2-.8 9.9-9.9a2.4 2.4 0 0 0-3.4-3.4L3.8 15.8 3 19z"></path>
-                        <path d="M12.6 6.9l4.5 4.5"></path>
-                        <path d="M14 20h6"></path>
-                    </svg>
-                </span>
-                <span class="tool-copy">
-                    <span class="tool-label" data-i18n="drawPencilLabel"></span>
-                    <span class="tool-desc" data-i18n="drawPencilDescShort"></span>
-                </span>
-            </button>
-
-            <button id="drawRectBtn" class="tool-btn" type="button">
-                <span class="tool-icon tool-icon--purple" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="4.5" y="6" width="15" height="12" rx="2.5"></rect>
-                        <path d="M8 10h8"></path>
-                        <path d="M8 14h5"></path>
-                    </svg>
-                </span>
-                <span class="tool-copy">
-                    <span class="tool-label" data-i18n="drawRectLabel"></span>
-                    <span class="tool-desc" data-i18n="drawRectDescShort"></span>
-                </span>
-            </button>
-        </div>
-
-        <p class="tool-note" data-i18n="actionHintCompact"></p>
+    <section class="guide-strip" aria-label="Quick guide">
+      <div class="guide-step">
+        <span class="guide-step__index">1</span>
+        <span class="guide-step__label" data-i18n="stepSetup"></span>
+      </div>
+      <div class="guide-step">
+        <span class="guide-step__index">2</span>
+        <span class="guide-step__label" data-i18n="stepLanguage"></span>
+      </div>
+      <div class="guide-step">
+        <span class="guide-step__index">3</span>
+        <span class="guide-step__label" data-i18n="stepCapture"></span>
+      </div>
     </section>
 
-    <section class="panel">
-        <div class="section-head">
-            <div>
-                <h2 data-i18n="sectionLanguageTitle"></h2>
-                <p data-i18n="sectionLanguageDescCompact"></p>
-            </div>
-            <div class="mini-badge" data-i18n="ocrUiSeparatedBadge"></div>
-        </div>
+    <section class="panel panel--setup">
+      <div class="panel-head">
+        <h2 class="panel-title" data-i18n="sectionSetupTitle"></h2>
+        <span id="setupState" class="state-pill"></span>
+      </div>
 
-        <div class="field-grid field-grid--2">
-            <div class="field-group">
-                <label for="sourceLang" data-i18n="sourceLangLabel"></label>
-                <select id="sourceLang"></select>
-            </div>
-            <div class="field-group">
-                <label for="targetLang" data-i18n="targetLangLabel"></label>
-                <select id="targetLang"></select>
-            </div>
-        </div>
+      <div class="field field--full" id="apiBaseUrlField">
+        <label for="apiBaseUrl" data-i18n="apiBaseUrlLabel"></label>
+        <input type="text" id="apiBaseUrl" data-i18n-placeholder="apiBaseUrlPlaceholder" autocomplete="off" spellcheck="false">
+      </div>
 
-        <p class="helper-inline" data-i18n="sourceLangHintCompact"></p>
+      <div class="grid-2">
+        <div class="field" id="modelNameField">
+          <label for="modelName" data-i18n="modelNameLabel"></label>
+          <input type="text" id="modelName" data-i18n-placeholder="modelNamePlaceholder" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="apiKey" data-i18n="apiKeyLabel"></label>
+          <input type="password" id="apiKey" data-i18n-placeholder="apiKeyPlaceholder">
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="field field--compact">
+          <label for="sourceLang" data-i18n="sourceLangLabel"></label>
+          <select id="sourceLang"></select>
+        </div>
+        <div class="field field--compact">
+          <label for="targetLang" data-i18n="targetLangLabel"></label>
+          <select id="targetLang"></select>
+        </div>
+      </div>
+
+      <div class="setup-meta">
+        <button id="toggleOptionalBtn" class="text-btn" type="button"></button>
+        <a class="text-link" href="https://ocr.space/OCRAPI" target="_blank" rel="noreferrer" data-i18n="ocrKeyHelpTiny"></a>
+        <span id="status" class="save-state" hidden></span>
+      </div>
+
+      <div id="optionalArea" class="optional-area" hidden>
+        <div class="field field--full field--compact">
+          <label for="ocrApiKey" data-i18n="ocrApiKeyLabel"></label>
+          <input type="password" id="ocrApiKey" data-i18n-placeholder="ocrApiKeyPlaceholder">
+        </div>
+      </div>
     </section>
 
-    <section class="panel">
-        <div class="section-head">
-            <div>
-                <h2 data-i18n="sectionConnectionTitle"></h2>
-                <p data-i18n="sectionConnectionDescCompact"></p>
-            </div>
-            <a href="https://ocr.space/OCRAPI" target="_blank" rel="noreferrer" class="mini-link" data-i18n="ocrKeyHelpLinkShort"></a>
+    <section class="panel panel--capture" id="capturePanel">
+      <div class="panel-head panel-head--capture">
+        <div>
+          <h2 class="panel-title" data-i18n="quickActions"></h2>
+          <p id="heroText" class="panel-tip"></p>
         </div>
+        <span class="mini-badge" data-i18n="ocrUiSeparatedBadge"></span>
+      </div>
 
-        <div class="field-grid">
-            <div class="field-group field-group--full">
-                <label for="apiBaseUrl" data-i18n="apiBaseUrlLabel"></label>
-                <input type="text" id="apiBaseUrl" data-i18n-placeholder="apiBaseUrlPlaceholder" autocomplete="off" spellcheck="false">
-            </div>
+      <div class="capture-grid">
+        <button id="drawPencilBtn" class="capture-btn capture-btn--blue" type="button">
+          <span class="capture-btn__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 20l3.2-.8 9.9-9.9a2.4 2.4 0 0 0-3.4-3.4L3.8 15.8 3 19z"></path>
+              <path d="M12.6 6.9l4.5 4.5"></path>
+              <path d="M14 20h6"></path>
+            </svg>
+          </span>
+          <span class="capture-btn__copy">
+            <span class="capture-btn__title" data-i18n="drawPencilLabel"></span>
+            <span class="capture-btn__hint" data-i18n="drawPencilDescShort"></span>
+          </span>
+        </button>
 
-            <div class="field-group">
-                <label for="modelName" data-i18n="modelNameLabel"></label>
-                <input type="text" id="modelName" data-i18n-placeholder="modelNamePlaceholder" autocomplete="off" spellcheck="false">
-            </div>
+        <button id="drawRectBtn" class="capture-btn capture-btn--purple" type="button">
+          <span class="capture-btn__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4.5" y="6" width="15" height="12" rx="2.5"></rect>
+              <path d="M8 10h8"></path>
+              <path d="M8 14h5"></path>
+            </svg>
+          </span>
+          <span class="capture-btn__copy">
+            <span class="capture-btn__title" data-i18n="drawRectLabel"></span>
+            <span class="capture-btn__hint" data-i18n="drawRectDescShort"></span>
+          </span>
+        </button>
+      </div>
 
-            <div class="field-group">
-                <label for="ocrApiKey" data-i18n="ocrApiKeyLabel"></label>
-                <input type="password" id="ocrApiKey" data-i18n-placeholder="ocrApiKeyPlaceholder">
-            </div>
-
-            <div class="field-group field-group--full">
-                <label for="apiKey" data-i18n="apiKeyLabel"></label>
-                <input type="password" id="apiKey" data-i18n-placeholder="apiKeyPlaceholder">
-            </div>
-        </div>
-
-        <p class="helper-inline helper-inline--muted" data-i18n="ocrKeyHelpBodyCompact"></p>
+      <div class="capture-footer">
+        <span class="shortcut-pill" data-i18n="captureReady"></span>
+        <p id="popupToast" class="popup-toast" hidden></p>
+      </div>
     </section>
+  </main>
 
-    <footer class="footer-bar">
-        <button id="saveBtn" class="save-btn" type="button" data-i18n="saveSettings"></button>
-        <span id="status" class="status-pill" hidden></span>
-    </footer>
-</main>
-
-<script src="i18n.js"></script>
-<script src="popup.js"></script>
+  <script src="i18n.js"></script>
+  <script src="popup.js"></script>
 </body>
 </html>
