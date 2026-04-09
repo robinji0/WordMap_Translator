@@ -121,14 +121,35 @@ function renderResult(data, x, y) {
         return;
     }
 
+    // --- UI 升级：增加明确的标题分隔 ---
+
     if (fullTranslation) {
-        const fullDiv = document.createElement('div');
-        fullDiv.className = 'wordmap-full-translation';
-        fullDiv.innerText = "✨ " + fullTranslation;
-        card.appendChild(fullDiv);
+        // 1. 整句翻译区块及标题
+        const fullSection = document.createElement('div');
+        fullSection.className = 'wordmap-section';
+
+        const title = document.createElement('div');
+        title.className = 'wordmap-section-title';
+        title.innerText = "✨ 整句翻译";
+
+        const fullText = document.createElement('div');
+        fullText.className = 'wordmap-full-translation';
+        fullText.innerText = fullTranslation;
+
+        fullSection.appendChild(title);
+        fullSection.appendChild(fullText);
+        card.appendChild(fullSection);
     }
 
     if (wordPairs.length > 0) {
+        // 2. 词语拆解区块及标题
+        const wordsSection = document.createElement('div');
+        wordsSection.className = 'wordmap-section';
+
+        const title = document.createElement('div');
+        title.className = 'wordmap-section-title';
+        title.innerText = "🔍 词语拆解";
+
         const wordsContainer = document.createElement('div');
         wordsContainer.className = 'wordmap-words-container';
 
@@ -152,7 +173,9 @@ function renderResult(data, x, y) {
             wordsContainer.appendChild(pairDiv);
         });
 
-        card.appendChild(wordsContainer);
+        wordsSection.appendChild(title);
+        wordsSection.appendChild(wordsContainer);
+        card.appendChild(wordsSection);
     }
 
     const closeHandler = (e) => {
