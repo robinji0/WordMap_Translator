@@ -96,7 +96,7 @@ function requestTranslation(text, x, y) {
     });
 }
 
-function renderResult(wordPairs, x, y) {
+function renderResult(data, x, y) {
     const oldCard = document.getElementById('wordmap-result-card');
     if (oldCard) oldCard.remove();
 
@@ -105,33 +105,55 @@ function renderResult(wordPairs, x, y) {
     card.style.left = `${x + 15}px`;
     card.style.top = `${y + 15}px`;
 
-    // 即使遇到空数组或错误数据，也给个提示
-    if (!Array.isArray(wordPairs) || wordPairs.length === 0) {
-        card.innerHTML = "<span style='padding:10px; color:red;'>AI 未返回任何翻译数据</span>";
+    let fullTranslation = "";
+    let wordPairs = [];
+
+    if (Array.isArray(data)) {
+        wordPairs = data;
+    } else if (data && typeof data === 'object') {
+        fullTranslation = data.full_translation || data.translation || "";
+        wordPairs = data.words || [];
+    }
+
+    if (wordPairs.length === 0 && !fullTranslation) {
+        card.innerHTML = "<span style='padding:10px; color:red;'>AI 未返回任何有效翻译数据</span>";
         document.body.appendChild(card);
         return;
     }
 
-    wordPairs.forEach(pair => {
-        const pairDiv = document.createElement('div');
-        pairDiv.className = 'word-pair';
+    if (fullTranslation) {
+        const fullDiv = document.createElement('div');
+        fullDiv.className = 'wordmap-full-translation';
+        fullDiv.innerText = "✨ " + fullTranslation;
+        card.appendChild(fullDiv);
+    }
 
-        // 【万能兼容解析】：无论大模型返回 src/dst 还是 en/zh，都能抓取到
-        const originalText = pair.src || pair.en || pair.text || pair.original || "???";
-        const translatedText = pair.dst || pair.zh || pair.translation || pair.Chinese || "无翻译";
+    if (wordPairs.length > 0) {
+        const wordsContainer = document.createElement('div');
+        wordsContainer.className = 'wordmap-words-container';
 
-        const enSpan = document.createElement('span');
-        enSpan.className = 'word-en';
-        enSpan.innerText = originalText;
+        wordPairs.forEach(pair => {
+            const pairDiv = document.createElement('div');
+            pairDiv.className = 'word-pair';
 
-        const zhSpan = document.createElement('span');
-        zhSpan.className = 'word-zh';
-        zhSpan.innerText = translatedText;
+            const originalText = pair.src || pair.en || pair.text || pair.original || "???";
+            const translatedText = pair.dst || pair.zh || pair.translation || pair.Chinese || "无翻译";
 
-        pairDiv.appendChild(enSpan);
-        pairDiv.appendChild(zhSpan);
-        card.appendChild(pairDiv);
-    });
+            const enSpan = document.createElement('span');
+            enSpan.className = 'word-en';
+            enSpan.innerText = originalText;
+
+            const zhSpan = document.createElement('span');
+            zhSpan.className = 'word-zh';
+            zhSpan.innerText = translatedText;
+
+            pairDiv.appendChild(enSpan);
+            pairDiv.appendChild(zhSpan);
+            wordsContainer.appendChild(pairDiv);
+        });
+
+        card.appendChild(wordsContainer);
+    }
 
     const closeHandler = (e) => {
         if (!card.contains(e.target)) {

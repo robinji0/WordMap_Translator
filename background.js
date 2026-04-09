@@ -32,21 +32,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 async function callUniversalLLM(text, apiBaseUrl, modelName, apiKey, targetLang) {
     const endpoint = `${apiBaseUrl}/chat/completions`;
 
-    // 【终极加强版 Prompt】：加入强制规则和具体示例，专治各种不服
     const systemPrompt = `You are a professional bilingual translator. 
-Task: Break down the user's text into meaningful words or short phrases, and translate them into ${targetLang}.
+Task: Translate the user's text into ${targetLang}, AND break down the text into meaningful words or short phrases with their translations.
 
 CRITICAL RULES:
-1. You MUST respond ONLY with a raw JSON array. Do not output markdown code blocks.
-2. STRICTLY use the keys "src" for the original text, and "dst" for the translation.
-3. Even for code, variables (e.g., WordMap_Translator), or symbols, you MUST provide a literal translation or explanation. Do not skip translation.
+1. You MUST respond ONLY with a raw JSON object. Do not output markdown code blocks.
+2. The JSON object MUST strictly follow this structure:
+{
+  "full_translation": "The fluent and complete translation of the entire text",
+  "words": [
+    {"src": "original word", "dst": "translation"},
+    ...
+  ]
+}
+3. Even for code, variables, or symbols, provide a literal translation or explanation in the "words" array.
 
-EXAMPLE FORMAT:
-[
-  {"src": "WordMap", "dst": "词图"},
-  {"src": "_", "dst": "下划线"},
-  {"src": "Translator", "dst": "翻译器"}
-]`;
+EXAMPLE:
+{
+  "full_translation": "词图翻译器",
+  "words": [
+    {"src": "WordMap", "dst": "词图"},
+    {"src": "_", "dst": "下划线"},
+    {"src": "Translator", "dst": "翻译器"}
+  ]
+}`;
 
     const headers = {
         'Content-Type': 'application/json'
@@ -61,7 +70,7 @@ EXAMPLE FORMAT:
             { role: "system", content: systemPrompt },
             { role: "user", content: text }
         ],
-        temperature: 0.2 // 进一步降低温度，让它必须按规矩办事
+        temperature: 0.2
     };
 
     const response = await fetch(endpoint, {

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "WordMap 圈选翻译",
   "version": "1.0",
-  "description": "画圈提取文字，并提供大模型的词对词精准翻译。",
+  "description": "画圈提取文字，并提供大模型的整句翻译与词对词精准拆解。",
   "permissions": [
     "storage",
     "activeTab",

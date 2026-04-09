@@ -8,8 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 });
 
-// === 新增：静默自动保存机制 ===
-// 监听所有输入框，只要用户敲击键盘或粘贴，立刻自动存入数据库，防丢失
+// 静默自动保存机制：监听所有输入框，用户输入即保存，防丢失
 const inputIds = ['apiBaseUrl', 'modelName', 'apiKey', 'targetLang'];
 inputIds.forEach(id => {
     document.getElementById(id).addEventListener('input', () => {
@@ -27,10 +26,10 @@ inputIds.forEach(id => {
 document.getElementById('saveBtn').addEventListener('click', () => {
     let baseUrl = document.getElementById('apiBaseUrl').value.trim();
 
-    // 智能纠错：如果用户手抖在网址最后多打了一个斜杠，自动去掉，防止 API 拼接报错
+    // 智能纠错：如果网址最后多打了一个斜杠，自动去掉
     if (baseUrl.endsWith('/')) {
         baseUrl = baseUrl.slice(0, -1);
-        document.getElementById('apiBaseUrl').value = baseUrl; // 纠正后的网址更新到界面
+        document.getElementById('apiBaseUrl').value = baseUrl;
     }
 
     const config = {
