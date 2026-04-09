@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "WordMap 圈选翻译",
+  "version": "1.0",
+  "description": "画圈提取文字，并提供大模型的词对词精准翻译。",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["style.css"]
+    }
+  ],
+  "commands": {
+    "toggle-draw-mode": {
+      "suggested_key": {
+        "default": "Alt+T",
+        "mac": "Alt+T"
+      },
+      "description": "开启/关闭画笔画圈模式"
+    }
+  }
+}
