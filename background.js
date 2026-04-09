@@ -9,7 +9,6 @@ chrome.commands.onCommand.addListener((command) => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "popup_toggle_draw") {
-        // ==== 核心修复：使用前端精确传递过来的 tabId ====
         if (request.tabId) {
             smartToggleDraw(request.tabId, request.mode || 'pencil');
         } else {
@@ -48,7 +47,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 chrome.tabs.sendMessage(sender.tab.id, { action: "update_status", message: `🧠 识别成功: "${extractedText.substring(0, 15).replace(/\n/g, " ")}..."\n正在请求大模型翻译...` });
                 const jsonResult = await callUniversalLLM(extractedText, apiBaseUrl, modelName, apiKey, targetLang || "Chinese");
 
-                // 传递 ocrText
                 chrome.tabs.sendMessage(sender.tab.id, { action: "show_result", data: jsonResult, ocrText: extractedText });
 
             } catch (err) {
@@ -88,18 +86,23 @@ async function performOCR(base64Image, ocrApiKey, sourceLang) {
 
 async function callUniversalLLM(text, apiBaseUrl, modelName, apiKey, targetLang) {
     const endpoint = `${apiBaseUrl}/chat/completions`;
+
+    // ==== 核心修复：极度严厉的 Prompt，锁死大模型的输出语言 ====
     const systemPrompt = `You are a professional bilingual translator. 
-Task: Translate the user's text into ${targetLang}, AND break down the text into words or short phrases with their translations.
+Task: You MUST translate the user's text strictly into ${targetLang}.
+
 CRITICAL RULES:
-1. You MUST respond ONLY with a raw JSON object. Do not output markdown code blocks.
-2. DO NOT SKIP ANY WORDS. Every single word, particle (e.g., in Korean/Japanese), and grammatical marker from the source text MUST be accounted for in the "words" array.
-3. The JSON object MUST strictly follow this structure:
+1. TARGET LANGUAGE ENFORCEMENT: The 'full_translation' AND every 'dst' value MUST be in ${targetLang}. Do NOT use English unless ${targetLang} is English!
+2. FORMAT: You MUST respond ONLY with a raw JSON object. Do not output markdown code blocks.
+3. COMPLETENESS: DO NOT SKIP ANY WORDS. Every single word, particle, and grammatical marker from the source text MUST be accounted for in the "words" array.
+4. The JSON object MUST strictly follow this structure:
 {
-  "full_translation": "The fluent and complete translation of the entire text",
+  "full_translation": "The fluent and complete translation of the entire text strictly in ${targetLang}",
   "words": [
-    {"src": "original word or particle", "dst": "translation or grammatical explanation"}
+    {"src": "original word or particle", "dst": "translation or grammatical explanation strictly in ${targetLang}"}
   ]
 }`;
+
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
