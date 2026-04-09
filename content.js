@@ -1,27 +1,43 @@
-// ==== 全局变量 ====
 var isDrawing = false;
 var canvas, ctx;
 var points = [];
 var startX = 0, startY = 0, currentX = 0, currentY = 0;
 var lastX = 0, lastY = 0;
-var currentTool = 'pencil'; // 'pencil' or 'rect'
+var currentTool = 'pencil';
 
-// ==== 核心修复 1：全局监听 ESC 按键 ====
+// ==== 界面语言全局变量与实时获取 ====
+var currentUILang = navigator.language.startsWith('zh') ? 'zh' : 'en';
+
+chrome.storage.local.get(['uiLang'], (res) => {
+    if (res.uiLang) currentUILang = res.uiLang;
+});
+chrome.storage.onChanged.addListener((changes) => {
+    if (changes.uiLang) currentUILang = changes.uiLang.newValue;
+});
+
+// 前端 UI 字典
+function t(key) {
+    const msgs = {
+        capture_img: { zh: "📸 正在截取图像...", en: "📸 Capturing image..." },
+        capture_fail: { zh: "❌ 截图失败", en: "❌ Capture failed" },
+        upload_ocr: { zh: "📡 正在上传识别文字...", en: "📡 Uploading for OCR..." },
+        ai_empty: { zh: "AI 未返回任何有效翻译数据", en: "AI returned no valid translation data" },
+        ocr_origin: { zh: "📝 OCR 识别原文", en: "📝 OCR Original Text" },
+        full_trans: { zh: "✨ 整句翻译", en: "✨ Full Translation" },
+        word_break: { zh: "🔍 词语拆解", en: "🔍 Word Breakdown" },
+        err_prefix: { zh: "❌ 出错啦: ", en: "❌ Error: " }
+    };
+    return msgs[key][currentUILang] || msgs[key]['zh'];
+}
+
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-        // 1. 如果正在画圈/框选，直接取消
-        if (document.getElementById('wordmap-canvas')) {
-            cleanupCanvas();
-        }
-        // 2. 如果结果卡片正在显示，直接关闭
+        if (document.getElementById('wordmap-canvas')) cleanupCanvas();
         var card = document.getElementById('wordmap-result-card');
-        if (card) {
-            card.remove();
-        }
+        if (card) card.remove();
     }
 });
 
-// 移除之前的同名监听器，防止热注入多重绑定
 if (window.wordmapMessageListener) {
     chrome.runtime.onMessage.removeListener(window.wordmapMessageListener);
 }
@@ -35,7 +51,7 @@ window.wordmapMessageListener = (request, sender, sendResponse) => {
     if (request.action === "update_status") {
         showLoadingCard(request.message, lastX, lastY);
     } else if (request.action === "show_error") {
-        showLoadingCard(`❌ 出错啦: ${request.message}`, lastX, lastY, true);
+        showLoadingCard(`${t('err_prefix')}${request.message}`, lastX, lastY, true);
     } else if (request.action === "show_result") {
         renderResult(request.data, lastX, lastY, request.ocrText);
     }
@@ -128,7 +144,7 @@ function draw(e) {
 async function stopDrawing(e) {
     isDrawing = false;
     var minX, minY, width, height;
-    var padding = 12; // 增加统一的安全留白，防止切掉边缘字母
+    var padding = 12;
 
     if (currentTool === 'pencil') {
         ctx.closePath();
@@ -150,7 +166,6 @@ async function stopDrawing(e) {
 
         if ((rMaxX - rMinX) < 10 || (rMaxY - rMinY) < 10) { cleanupCanvas(); return; }
 
-        // 给矩形框选也强制增加留白 padding
         minX = Math.max(0, rMinX - padding);
         minY = Math.max(0, rMinY - padding);
         width = Math.min(window.innerWidth - minX, (rMaxX - rMinX) + padding * 2);
@@ -161,16 +176,15 @@ async function stopDrawing(e) {
     lastY = e.clientY + window.scrollY;
 
     cleanupCanvas();
-    showLoadingCard("📸 正在截取图像...", lastX, lastY);
+    showLoadingCard(t('capture_img'), lastX, lastY);
 
     chrome.runtime.sendMessage({ action: "capture_tab" }, (response) => {
         if (!response || !response.dataUrl) {
-            showLoadingCard("❌ 截图失败", lastX, lastY, true);
+            showLoadingCard(t('capture_fail'), lastX, lastY, true);
             return;
         }
         var img = new Image();
         img.onload = () => {
-            // ==== 核心修复 2：彻底抛弃 devicePixelRatio，使用实际图像的真实比例，完美免疫网页缩放干扰 ====
             var scaleX = img.width / window.innerWidth;
             var scaleY = img.height / window.innerHeight;
 
@@ -179,14 +193,13 @@ async function stopDrawing(e) {
             cropCanvas.height = height * scaleY;
             var cropCtx = cropCanvas.getContext('2d');
 
-            // 精准裁剪
             cropCtx.drawImage(
                 img,
                 minX * scaleX, minY * scaleY, width * scaleX, height * scaleY,
                 0, 0, cropCanvas.width, cropCanvas.height
             );
             var croppedBase64 = cropCanvas.toDataURL('image/jpeg');
-            showLoadingCard("📡 正在上传识别文字...", lastX, lastY);
+            showLoadingCard(t('upload_ocr'), lastX, lastY);
             chrome.runtime.sendMessage({ action: "process_image", imageBase64: croppedBase64 });
         };
         img.src = response.dataUrl;
@@ -244,7 +257,6 @@ function getOrCreateCard(x, y) {
         document.addEventListener('mouseup', onMouseUp);
 
         const closeHandler = (e) => {
-            // 防止点击卡片内部或者拖拽手柄时关闭
             if (!card.contains(e.target)) {
                 card.remove();
                 document.removeEventListener('mousedown', closeHandler);
@@ -282,7 +294,7 @@ function renderResult(data, x, y, ocrText = "") {
     }
 
     if (wordPairs.length === 0 && !fullTranslation) {
-        content.innerHTML = "<span style='padding:10px; color:red;'>AI 未返回任何有效翻译数据</span>";
+        content.innerHTML = `<span style='padding:10px; color:red;'>${t('ai_empty')}</span>`;
         return;
     }
 
@@ -291,7 +303,7 @@ function renderResult(data, x, y, ocrText = "") {
         ocrSection.className = 'wordmap-section';
         const title = document.createElement('div');
         title.className = 'wordmap-section-title';
-        title.innerText = "📝 OCR 识别原文";
+        title.innerText = t('ocr_origin');
         const textDiv = document.createElement('div');
         textDiv.className = 'wordmap-ocr-text';
         textDiv.innerText = ocrText;
@@ -305,7 +317,7 @@ function renderResult(data, x, y, ocrText = "") {
         fullSection.className = 'wordmap-section';
         const title = document.createElement('div');
         title.className = 'wordmap-section-title';
-        title.innerText = "✨ 整句翻译";
+        title.innerText = t('full_trans');
         const fullText = document.createElement('div');
         fullText.className = 'wordmap-full-translation';
         fullText.innerText = fullTranslation;
@@ -319,7 +331,7 @@ function renderResult(data, x, y, ocrText = "") {
         wordsSection.className = 'wordmap-section';
         const title = document.createElement('div');
         title.className = 'wordmap-section-title';
-        title.innerText = "🔍 词语拆解";
+        title.innerText = t('word_break');
         const wordsContainer = document.createElement('div');
         wordsContainer.className = 'wordmap-words-container';
 
@@ -327,7 +339,7 @@ function renderResult(data, x, y, ocrText = "") {
             const pairDiv = document.createElement('div');
             pairDiv.className = 'word-pair';
             const originalText = pair.src || pair.en || pair.text || pair.original || "???";
-            const translatedText = pair.dst || pair.zh || pair.translation || pair.Chinese || "无翻译";
+            const translatedText = pair.dst || pair.zh || pair.translation || pair.Chinese || "无翻译/No Translation";
             const enSpan = document.createElement('span');
             enSpan.className = 'word-en';
             enSpan.innerText = originalText;

@@ -1,3 +1,13 @@
+function getMsg(key, lang, arg) {
+    const msgs = {
+        err_config: { zh: "请先配置大模型接口地址和名称！", en: "Please configure LLM Base URL and Model Name first!" },
+        ocr_extracting: { zh: `📡 正在通过 OCR 提取文字 (引擎: ${arg})...`, en: `📡 Extracting text via OCR (Engine: ${arg})...` },
+        err_ocr_fail: { zh: "未能在图片中识别出清晰的文字，请重新框选。", en: "Failed to recognize clear text in the image. Please re-select." },
+        llm_requesting: { zh: `🧠 识别成功: "${arg}..."\n正在请求大模型翻译...`, en: `🧠 OCR Success: "${arg}..."\nRequesting LLM translation...` }
+    };
+    return msgs[key][lang] || msgs[key]['zh'];
+}
+
 chrome.commands.onCommand.addListener((command) => {
     chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
         if (tabs[0]) {
@@ -28,25 +38,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === "process_image") {
-        chrome.storage.local.get(['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang'], async (result) => {
-            const { apiBaseUrl, modelName, apiKey, targetLang, ocrApiKey, sourceLang } = result;
-            if (!apiBaseUrl || !modelName) {
-                chrome.tabs.sendMessage(sender.tab.id, { action: "show_error", message: "请先配置大模型接口地址和名称！" });
-                return;
-            }
+        chrome.storage.local.get(['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang', 'uiLang'], async (result) => {
+            const { apiBaseUrl, modelName, apiKey, targetLang, ocrApiKey, sourceLang, uiLang } = result;
+
+            const currentUILang = uiLang || (navigator.language.startsWith('zh') ? 'zh' : 'en');
             const currentOcrLang = sourceLang || 'eng';
 
+            if (!apiBaseUrl || !modelName) {
+                chrome.tabs.sendMessage(sender.tab.id, { action: "show_error", message: getMsg('err_config', currentUILang) });
+                return;
+            }
+
             try {
-                chrome.tabs.sendMessage(sender.tab.id, { action: "update_status", message: `📡 正在通过 OCR 提取文字 (引擎: ${currentOcrLang})...` });
+                chrome.tabs.sendMessage(sender.tab.id, { action: "update_status", message: getMsg('ocr_extracting', currentUILang, currentOcrLang) });
+
                 const extractedText = await performOCR(request.imageBase64, ocrApiKey || 'helloworld', currentOcrLang);
                 if (!extractedText || extractedText.trim() === '') {
-                    chrome.tabs.sendMessage(sender.tab.id, { action: "show_error", message: "未能在图片中识别出清晰的文字，请重新框选。" });
+                    chrome.tabs.sendMessage(sender.tab.id, { action: "show_error", message: getMsg('err_ocr_fail', currentUILang) });
                     return;
                 }
 
-                chrome.tabs.sendMessage(sender.tab.id, { action: "update_status", message: `🧠 识别成功: "${extractedText.substring(0, 15).replace(/\n/g, " ")}..."\n正在请求大模型翻译...` });
-                const jsonResult = await callUniversalLLM(extractedText, apiBaseUrl, modelName, apiKey, targetLang || "Chinese");
+                const shortText = extractedText.substring(0, 15).replace(/\n/g, " ");
+                chrome.tabs.sendMessage(sender.tab.id, { action: "update_status", message: getMsg('llm_requesting', currentUILang, shortText) });
 
+                const jsonResult = await callUniversalLLM(extractedText, apiBaseUrl, modelName, apiKey, targetLang || "Chinese");
                 chrome.tabs.sendMessage(sender.tab.id, { action: "show_result", data: jsonResult, ocrText: extractedText });
 
             } catch (err) {
@@ -79,18 +94,20 @@ async function performOCR(base64Image, ocrApiKey, sourceLang) {
 
     const response = await fetch('https://api.ocr.space/parse/image', { method: 'POST', body: formData });
     const data = await response.json();
-    if (data.IsErroredOnProcessing) throw new Error(`OCR 引擎报错: ${data.ErrorMessage[0]}`);
+    if (data.IsErroredOnProcessing) throw new Error(`OCR Error: ${data.ErrorMessage[0]}`);
     if (data.ParsedResults && data.ParsedResults.length > 0) return data.ParsedResults[0].ParsedText;
     return "";
 }
 
 async function callUniversalLLM(text, apiBaseUrl, modelName, apiKey, targetLang) {
-    const endpoint = `${apiBaseUrl}/chat/completions`;
+    // ==== 核心修复：智能补全或裁剪 API 后缀 ====
+    let endpoint = apiBaseUrl.trim();
+    if (!endpoint.endsWith('/chat/completions')) {
+        endpoint = endpoint.replace(/\/$/, '') + '/chat/completions';
+    }
 
-    // ==== 核心修复：极度严厉的 Prompt，锁死大模型的输出语言 ====
     const systemPrompt = `You are a professional bilingual translator. 
 Task: You MUST translate the user's text strictly into ${targetLang}.
-
 CRITICAL RULES:
 1. TARGET LANGUAGE ENFORCEMENT: The 'full_translation' AND every 'dst' value MUST be in ${targetLang}. Do NOT use English unless ${targetLang} is English!
 2. FORMAT: You MUST respond ONLY with a raw JSON object. Do not output markdown code blocks.
@@ -102,7 +119,6 @@ CRITICAL RULES:
     {"src": "original word or particle", "dst": "translation or grammatical explanation strictly in ${targetLang}"}
   ]
 }`;
-
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
@@ -115,9 +131,9 @@ CRITICAL RULES:
         temperature: 0.1
     };
     const response = await fetch(endpoint, { method: 'POST', headers: headers, body: JSON.stringify(payload) });
-    if (!response.ok) throw new Error(`AI 请求失败 (状态码 ${response.status})`);
+    if (!response.ok) throw new Error(`AI Request Failed (HTTP ${response.status})`);
     const data = await response.json();
-    if (!data.choices || data.choices.length === 0) throw new Error("AI 返回异常。");
+    if (!data.choices || data.choices.length === 0) throw new Error("AI returned empty data.");
     let resultText = data.choices[0].message.content.trim();
     if (resultText.startsWith('```json')) resultText = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
     else if (resultText.startsWith('```')) resultText = resultText.replace(/```/g, '').trim();
@@ -125,6 +141,6 @@ CRITICAL RULES:
     try {
         return JSON.parse(resultText);
     } catch (parseError) {
-        throw new Error(`解析 JSON 失败。\n模型返回: ${resultText}`);
+        throw new Error(`Parse JSON failed.\nModel output: ${resultText}`);
     }
 }

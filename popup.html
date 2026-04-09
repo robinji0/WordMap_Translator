@@ -22,26 +22,32 @@
     </style>
 </head>
 <body>
-<h3>⚙️ WordMap 通用设置</h3>
+<h3 data-i18n="title">⚙️ WordMap 通用设置</h3>
 
-<div class="help-text">
+<div class="help-text" data-i18n="ocrHelp">
     <b>免费 OCR 引擎支持：</b><br>
     默认使用公共测试 Key，若报错频繁请 <a href="https://ocr.space/OCRAPI" target="_blank" class="link">点此免费申请专属 Key</a>
 </div>
 
-<label>OCR.space API Key:</label>
-<input type="password" id="ocrApiKey" placeholder="留空则使用默认 helloworld">
+<label data-i18n="uiLangLabel">界面语言 (UI Language):</label>
+<select id="uiLang">
+    <option value="zh">简体中文 (Chinese)</option>
+    <option value="en">English</option>
+</select>
 
-<label>大模型接口地址 (Base URL):</label>
+<label data-i18n="ocrKeyLabel">OCR.space API Key:</label>
+<input type="password" id="ocrApiKey" data-i18n-placeholder="ocrKeyPlaceholder" placeholder="留空则使用默认 helloworld">
+
+<label data-i18n="baseUrlLabel">大模型接口地址 (Base URL):</label>
 <input type="text" id="apiBaseUrl" placeholder="https://api.openai.com/v1">
 
-<label>大模型名称 (纯文本模型):</label>
-<input type="text" id="modelName" placeholder="例如: llama-3.3-70b-versatile">
+<label data-i18n="modelNameLabel">大模型名称 (纯文本模型):</label>
+<input type="text" id="modelName" data-i18n-placeholder="modelNamePlaceholder" placeholder="例如: llama-3.3-70b-versatile">
 
-<label>大模型 API Key:</label>
+<label data-i18n="apiKeyLabel">大模型 API Key:</label>
 <input type="password" id="apiKey" placeholder="sk-...">
 
-<label>你要抠的网页语言 (Source):</label>
+<label data-i18n="sourceLangLabel">你要抠的网页语言 (Source):</label>
 <select id="sourceLang">
     <option value="eng">英语 (English)</option>
     <option value="jpn">日语 (Japanese)</option>
@@ -53,7 +59,7 @@
     <option value="chs">中文 (Chinese)</option>
 </select>
 
-<label>翻译目标语言 (Target):</label>
+<label data-i18n="targetLangLabel">翻译目标语言 (Target):</label>
 <select id="targetLang">
     <option value="Chinese">中文 (Chinese)</option>
     <option value="English">英文 (English)</option>
@@ -65,17 +71,17 @@
     <option value="Russian">俄文 (Russian)</option>
 </select>
 
-<button id="saveBtn" class="btn-save">保存配置</button>
-<p id="status" style="color: green; display: none; font-size: 12px; margin-top:5px;">✅ 保存成功！</p>
+<button id="saveBtn" class="btn-save" data-i18n="saveBtn">保存配置</button>
+<p id="status" style="color: green; display: none; font-size: 12px; margin-top:5px;" data-i18n="saveSuccess">✅ 保存成功！</p>
 
 <hr>
 
-<label>快速操作:</label>
+<label data-i18n="quickActions">快速操作:</label>
 <div class="action-group">
-    <button id="drawPencilBtn" class="btn-draw">🖍️ 铅笔画圈</button>
-    <button id="drawRectBtn" class="btn-rect">🔲 矩形框选</button>
+    <button id="drawPencilBtn" class="btn-draw" data-i18n="pencilBtn">🖍️ 铅笔画圈</button>
+    <button id="drawRectBtn" class="btn-rect" data-i18n="rectBtn">🔲 矩形框选</button>
 </div>
-<button id="shortcutBtn" class="btn-shortcut">⌨️ 自定义快捷键</button>
+<button id="shortcutBtn" class="btn-shortcut" data-i18n="shortcutBtn">⌨️ 自定义快捷键</button>
 
 <script src="popup.js"></script>
 </body>
