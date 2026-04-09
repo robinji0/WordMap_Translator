@@ -19,6 +19,10 @@
         .help-text { font-size: 11px; color: #666; background: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 10px;}
         .link { color: #2196F3; text-decoration: none; }
         .action-group { display: flex; gap: 10px; margin-top: 10px; }
+        /* 新增赞助按钮样式 */
+        .sponsor-container { text-align: center; margin-top: 15px; }
+        .sponsor-link { color: #E91E63; text-decoration: none; font-size: 13px; font-weight: bold; padding: 5px 10px; border-radius: 15px; background: #fce4ec; transition: all 0.3s; display: inline-block; cursor: pointer; }
+        .sponsor-link:hover { background: #f8bbd0; transform: scale(1.05); }
     </style>
 </head>
 <body>
@@ -82,6 +86,10 @@
     <button id="drawRectBtn" class="btn-rect" data-i18n="rectBtn">🔲 矩形框选</button>
 </div>
 <button id="shortcutBtn" class="btn-shortcut" data-i18n="shortcutBtn">⌨️ 自定义快捷键</button>
+
+<div class="sponsor-container">
+    <a id="sponsorBtn" class="sponsor-link" data-i18n="sponsorBtn">☕ 赞助开发者 (Sponsor)</a>
+</div>
 
 <script src="popup.js"></script>
 </body>

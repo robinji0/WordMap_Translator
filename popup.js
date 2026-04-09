@@ -1,7 +1,6 @@
 let isDataLoaded = false;
-let currentUILang = navigator.language.startsWith('zh') ? 'zh' : 'en'; // 默认读取浏览器语言
+let currentUILang = navigator.language.startsWith('zh') ? 'zh' : 'en';
 
-// 双语字典库
 const i18nMap = {
     zh: {
         title: "⚙️ WordMap 通用设置",
@@ -21,7 +20,8 @@ const i18nMap = {
         pencilBtn: "🖍️ 铅笔画圈",
         rectBtn: "🔲 矩形框选",
         shortcutBtn: "⌨️ 自定义快捷键",
-        sysPageError: "⚠️ 插件无法在浏览器系统页面运行！"
+        sysPageError: "⚠️ 插件无法在浏览器系统页面运行！",
+        sponsorBtn: "☕ 赞助开发者 (Sponsor)" // 赞助文案
     },
     en: {
         title: "⚙️ WordMap Settings",
@@ -41,11 +41,11 @@ const i18nMap = {
         pencilBtn: "🖍️ Pencil Draw",
         rectBtn: "🔲 Rect Select",
         shortcutBtn: "⌨️ Custom Shortcuts",
-        sysPageError: "⚠️ Extension cannot run on browser system pages!"
+        sysPageError: "⚠️ Extension cannot run on browser system pages!",
+        sponsorBtn: "☕ Sponsor Developer" // 赞助文案
     }
 };
 
-// 渲染界面语言
 function renderI18n(lang) {
     document.querySelectorAll('[data-i18n]').forEach(el => {
         const key = el.getAttribute('data-i18n');
@@ -61,7 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.get(['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang', 'uiLang'], (result) => {
         if (result.uiLang) currentUILang = result.uiLang;
         document.getElementById('uiLang').value = currentUILang;
-        renderI18n(currentUILang); // 初始渲染界面语言
+        renderI18n(currentUILang);
 
         if (result.apiBaseUrl) document.getElementById('apiBaseUrl').value = result.apiBaseUrl;
         if (result.modelName) document.getElementById('modelName').value = result.modelName;
@@ -81,7 +81,6 @@ inputIds.forEach(id => {
         element.addEventListener(eventType, (e) => {
             if (!isDataLoaded) return;
 
-            // 如果改变的是语言选择框，立即刷新界面
             if (e.target.id === 'uiLang') {
                 currentUILang = e.target.value;
                 renderI18n(currentUILang);
@@ -137,4 +136,9 @@ document.getElementById('drawRectBtn').addEventListener('click', () => sendDrawC
 
 document.getElementById('shortcutBtn').addEventListener('click', () => {
     chrome.tabs.create({url: "chrome://extensions/shortcuts"});
+});
+
+// ==== 绑定赞助按钮逻辑 ====
+document.getElementById('sponsorBtn').addEventListener('click', () => {
+    chrome.tabs.create({url: "https://www.paypal.com/paypalme/robin326753"});
 });
