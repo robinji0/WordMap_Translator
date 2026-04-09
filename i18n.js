@@ -25,6 +25,7 @@
       quickActionsDesc: '先配置，后圈选。',
       ocrUiSeparatedBadge: 'UI ≠ OCR',
       captureReady: 'Alt + T / Alt + R',
+      coachShortcutInline: '快捷键：{shortcuts}',
 
       coachReadyCompact: '已就绪，直接点下面按钮。',
       coachNeedsConfigCompact: '先填模型地址和模型名。',
@@ -169,6 +170,7 @@
       quickActionsDesc: 'Set up first, then capture.',
       ocrUiSeparatedBadge: 'UI ≠ OCR',
       captureReady: 'Alt + T / Alt + R',
+      coachShortcutInline: 'Shortcuts: {shortcuts}',
 
       coachReadyCompact: 'Ready. Use either capture button below.',
       coachNeedsConfigCompact: 'Add the model URL and model name first.',

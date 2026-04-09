@@ -167,7 +167,12 @@ function updateUiState() {
   elements.setupState.classList.toggle('is-ready', ready);
   elements.setupState.classList.toggle('is-missing', !ready);
   elements.capturePanel.classList.toggle('is-missing', !ready);
-  elements.heroText.textContent = WordMapI18n.t(uiLang, ready ? 'coachReadyCompact' : 'coachNeedsConfigCompact');
+  elements.heroText.textContent = [
+    WordMapI18n.t(uiLang, ready ? 'coachReadyCompact' : 'coachNeedsConfigCompact'),
+    WordMapI18n.t(uiLang, 'coachShortcutInline', {
+      shortcuts: WordMapI18n.t(uiLang, 'captureReady')
+    })
+  ].join(' ');
 }
 
 function showStatus(message) {
