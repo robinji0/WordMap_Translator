@@ -1,131 +1,193 @@
-var isDrawing = false;
-var canvas, ctx;
-var points = [];
-var startX = 0, startY = 0, currentX = 0, currentY = 0;
-var lastX = 0, lastY = 0;
-var currentTool = 'pencil';
+(() => {
+    let isDrawing = false;
+    let canvas = null;
+    let ctx = null;
+    let points = [];
+    let startX = 0;
+    let startY = 0;
+    let currentX = 0;
+    let currentY = 0;
+    let lastX = 0;
+    let lastY = 0;
+    let currentTool = 'pencil';
+    let currentUiLang = WordMapI18n.detectBrowserUiLang();
+    let cardAutoCloseTimer = null;
 
-// ==== 界面语言全局变量与实时获取 ====
-var currentUILang = navigator.language.startsWith('zh') ? 'zh' : 'en';
+    loadStoredUiLang();
 
-chrome.storage.local.get(['uiLang'], (res) => {
-    if (res.uiLang) currentUILang = res.uiLang;
-});
-chrome.storage.onChanged.addListener((changes) => {
-    if (changes.uiLang) currentUILang = changes.uiLang.newValue;
-});
-
-// 前端 UI 字典
-function t(key) {
-    const msgs = {
-        capture_img: { zh: "📸 正在截取图像...", en: "📸 Capturing image..." },
-        capture_fail: { zh: "❌ 截图失败", en: "❌ Capture failed" },
-        upload_ocr: { zh: "📡 正在上传识别文字...", en: "📡 Uploading for OCR..." },
-        ai_empty: { zh: "AI 未返回任何有效翻译数据", en: "AI returned no valid translation data" },
-        ocr_origin: { zh: "📝 OCR 识别原文", en: "📝 OCR Original Text" },
-        full_trans: { zh: "✨ 整句翻译", en: "✨ Full Translation" },
-        word_break: { zh: "🔍 词语拆解", en: "🔍 Word Breakdown" },
-        err_prefix: { zh: "❌ 出错啦: ", en: "❌ Error: " }
-    };
-    return msgs[key][currentUILang] || msgs[key]['zh'];
-}
-
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-        if (document.getElementById('wordmap-canvas')) cleanupCanvas();
-        var card = document.getElementById('wordmap-result-card');
-        if (card) card.remove();
+    if (window.wordmapEscListener) {
+        document.removeEventListener('keydown', window.wordmapEscListener);
     }
-});
+    window.wordmapEscListener = handleEscKeydown;
+    document.addEventListener('keydown', window.wordmapEscListener);
 
-if (window.wordmapMessageListener) {
-    chrome.runtime.onMessage.removeListener(window.wordmapMessageListener);
-}
+    if (window.wordmapMessageListener) {
+        chrome.runtime.onMessage.removeListener(window.wordmapMessageListener);
+    }
+    window.wordmapMessageListener = handleRuntimeMessage;
+    chrome.runtime.onMessage.addListener(window.wordmapMessageListener);
 
-window.wordmapMessageListener = (request, sender, sendResponse) => {
-    if (request.action === "toggle_draw") {
-        toggleDrawMode(request.mode || 'pencil');
-        sendResponse({status: "ok"});
+    if (window.wordmapStorageListener) {
+        chrome.storage.onChanged.removeListener(window.wordmapStorageListener);
+    }
+    window.wordmapStorageListener = handleStorageChange;
+    chrome.storage.onChanged.addListener(window.wordmapStorageListener);
+
+    function loadStoredUiLang() {
+        chrome.storage.local.get(['uiLang'], (result) => {
+            currentUiLang = WordMapI18n.getEffectiveUiLang(result.uiLang);
+            updateCardStaticCopy();
+            updateDrawHintCopy();
+        });
     }
 
-    if (request.action === "update_status") {
-        showLoadingCard(request.message, lastX, lastY);
-    } else if (request.action === "show_error") {
-        showLoadingCard(`${t('err_prefix')}${request.message}`, lastX, lastY, true);
-    } else if (request.action === "show_result") {
-        renderResult(request.data, lastX, lastY, request.ocrText);
-    }
-    return true;
-};
-
-chrome.runtime.onMessage.addListener(window.wordmapMessageListener);
-
-function toggleDrawMode(mode) {
-    currentTool = mode;
-    if (document.getElementById('wordmap-canvas')) {
-        cleanupCanvas();
-        return;
+    function handleStorageChange(changes, areaName) {
+        if (areaName === 'local' && changes.uiLang) {
+            currentUiLang = WordMapI18n.getEffectiveUiLang(changes.uiLang.newValue);
+            updateCardStaticCopy();
+            updateDrawHintCopy();
+        }
     }
 
-    canvas = document.createElement('canvas');
-    canvas.id = 'wordmap-canvas';
-    canvas.style.position = 'fixed';
-    canvas.style.top = '0';
-    canvas.style.left = '0';
-    canvas.style.width = '100vw';
-    canvas.style.height = '100vh';
-    canvas.style.zIndex = '999998';
-    canvas.style.cursor = 'crosshair';
+    function handleEscKeydown(event) {
+        if (event.key !== 'Escape') {
+            return;
+        }
 
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    ctx = canvas.getContext('2d');
+        if (document.getElementById('wordmap-canvas')) {
+            cleanupCanvas();
+        }
 
-    if (currentTool === 'rect') {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-    } else {
+        removeCard();
+    }
+
+    function handleRuntimeMessage(request, sender, sendResponse) {
+        if (request.uiLang) {
+            currentUiLang = WordMapI18n.getEffectiveUiLang(request.uiLang);
+        }
+
+        if (request.action === 'toggle_draw') {
+            toggleDrawMode(request.mode || 'pencil');
+            sendResponse({ status: 'ok' });
+        } else if (request.action === 'show_status') {
+            showStatusCard(
+                {
+                    title: request.title,
+                    detail: request.detail,
+                    state: request.state || 'progress'
+                },
+                lastX,
+                lastY
+            );
+        } else if (request.action === 'show_result') {
+            renderResult(request.data, lastX, lastY, request.ocrText || '');
+        } else if (request.action === 'update_status') {
+            showStatusCard(
+                {
+                    title: request.message,
+                    detail: '',
+                    state: 'progress'
+                },
+                lastX,
+                lastY
+            );
+        } else if (request.action === 'show_error') {
+            showStatusCard(
+                {
+                    title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+                    detail: request.message,
+                    state: 'error'
+                },
+                lastX,
+                lastY
+            );
+        }
+
+        return true;
+    }
+
+    function toggleDrawMode(mode) {
+        currentTool = mode;
+
+        if (document.getElementById('wordmap-canvas')) {
+            cleanupCanvas();
+            return;
+        }
+
+        removeCard();
+
+        canvas = document.createElement('canvas');
+        canvas.id = 'wordmap-canvas';
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        canvas.style.position = 'fixed';
+        canvas.style.top = '0';
+        canvas.style.left = '0';
+        canvas.style.width = '100vw';
+        canvas.style.height = '100vh';
+        canvas.style.zIndex = '999998';
+        canvas.style.cursor = 'crosshair';
+
+        ctx = canvas.getContext('2d');
+        initializeCanvasLook();
+
+        document.body.appendChild(canvas);
+        document.body.classList.add('wordmap-drawing-mode');
+        showDrawHint();
+
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('mouseup', stopDrawing);
+    }
+
+    function initializeCanvasLook() {
+        if (currentTool === 'rect') {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.28)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            return;
+        }
+
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.strokeStyle = '#FF3B30';
+        ctx.strokeStyle = '#2563eb';
         ctx.lineWidth = 3;
         ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
         ctx.setLineDash([]);
     }
 
-    document.body.appendChild(canvas);
+    function startDrawing(event) {
+        isDrawing = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        currentX = startX;
+        currentY = startY;
 
-    canvas.addEventListener('mousedown', startDrawing);
-    canvas.addEventListener('mousemove', draw);
-    canvas.addEventListener('mouseup', stopDrawing);
-}
-
-function startDrawing(e) {
-    isDrawing = true;
-    startX = e.clientX;
-    startY = e.clientY;
-    currentX = startX;
-    currentY = startY;
-
-    if (currentTool === 'pencil') {
-        points = [];
-        ctx.beginPath();
-        ctx.moveTo(e.clientX, e.clientY);
-        points.push({x: e.clientX, y: e.clientY});
+        if (currentTool === 'pencil') {
+            points = [];
+            ctx.beginPath();
+            ctx.moveTo(event.clientX, event.clientY);
+            points.push({ x: event.clientX, y: event.clientY });
+        }
     }
-}
 
-function draw(e) {
-    if (!isDrawing) return;
-    currentX = e.clientX;
-    currentY = e.clientY;
+    function draw(event) {
+        if (!isDrawing) {
+            return;
+        }
 
-    if (currentTool === 'pencil') {
-        ctx.lineTo(currentX, currentY);
-        ctx.stroke();
-        points.push({x: currentX, y: currentY});
-    } else if (currentTool === 'rect') {
+        currentX = event.clientX;
+        currentY = event.clientY;
+
+        if (currentTool === 'pencil') {
+            ctx.lineTo(currentX, currentY);
+            ctx.stroke();
+            points.push({ x: currentX, y: currentY });
+            return;
+        }
+
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.28)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         const rectX = Math.min(startX, currentX);
@@ -134,224 +196,501 @@ function draw(e) {
         const rectH = Math.abs(currentY - startY);
 
         ctx.clearRect(rectX, rectY, rectW, rectH);
-        ctx.strokeStyle = '#2196F3';
+        ctx.strokeStyle = '#7c3aed';
         ctx.lineWidth = 2;
-        ctx.setLineDash([5, 5]);
+        ctx.setLineDash([8, 6]);
         ctx.strokeRect(rectX, rectY, rectW, rectH);
     }
-}
 
-async function stopDrawing(e) {
-    isDrawing = false;
-    var minX, minY, width, height;
-    var padding = 12;
+    function stopDrawing(event) {
+        isDrawing = false;
 
-    if (currentTool === 'pencil') {
-        ctx.closePath();
-        if (points.length < 5) { cleanupCanvas(); return; }
-        var pMinX = Math.min(...points.map(p => p.x));
-        var pMaxX = Math.max(...points.map(p => p.x));
-        var pMinY = Math.min(...points.map(p => p.y));
-        var pMaxY = Math.max(...points.map(p => p.y));
+        let minX;
+        let minY;
+        let width;
+        let height;
+        const padding = 12;
 
-        minX = Math.max(0, pMinX - padding);
-        minY = Math.max(0, pMinY - padding);
-        width = Math.min(window.innerWidth - minX, (pMaxX - pMinX) + padding * 2);
-        height = Math.min(window.innerHeight - minY, (pMaxY - pMinY) + padding * 2);
-    } else {
-        var rMinX = Math.min(startX, currentX);
-        var rMaxX = Math.max(startX, currentX);
-        var rMinY = Math.min(startY, currentY);
-        var rMaxY = Math.max(startY, currentY);
+        if (currentTool === 'pencil') {
+            ctx.closePath();
+            if (points.length < 5) {
+                cleanupCanvas();
+                return;
+            }
 
-        if ((rMaxX - rMinX) < 10 || (rMaxY - rMinY) < 10) { cleanupCanvas(); return; }
+            const pMinX = Math.min(...points.map((point) => point.x));
+            const pMaxX = Math.max(...points.map((point) => point.x));
+            const pMinY = Math.min(...points.map((point) => point.y));
+            const pMaxY = Math.max(...points.map((point) => point.y));
 
-        minX = Math.max(0, rMinX - padding);
-        minY = Math.max(0, rMinY - padding);
-        width = Math.min(window.innerWidth - minX, (rMaxX - rMinX) + padding * 2);
-        height = Math.min(window.innerHeight - minY, (rMaxY - rMinY) + padding * 2);
+            minX = Math.max(0, pMinX - padding);
+            minY = Math.max(0, pMinY - padding);
+            width = Math.min(window.innerWidth - minX, pMaxX - pMinX + padding * 2);
+            height = Math.min(window.innerHeight - minY, pMaxY - pMinY + padding * 2);
+        } else {
+            const rMinX = Math.min(startX, currentX);
+            const rMaxX = Math.max(startX, currentX);
+            const rMinY = Math.min(startY, currentY);
+            const rMaxY = Math.max(startY, currentY);
+
+            if (rMaxX - rMinX < 10 || rMaxY - rMinY < 10) {
+                cleanupCanvas();
+                return;
+            }
+
+            minX = Math.max(0, rMinX - padding);
+            minY = Math.max(0, rMinY - padding);
+            width = Math.min(window.innerWidth - minX, rMaxX - rMinX + padding * 2);
+            height = Math.min(window.innerHeight - minY, rMaxY - rMinY + padding * 2);
+        }
+
+        lastX = event.clientX + window.scrollX;
+        lastY = event.clientY + window.scrollY;
+
+        cleanupCanvas();
+        showStatusCard(
+            {
+                title: WordMapI18n.t(currentUiLang, 'statusPreparingCaptureTitle'),
+                detail: WordMapI18n.t(currentUiLang, 'statusPreparingCaptureDetail'),
+                state: 'progress'
+            },
+            lastX,
+            lastY
+        );
+
+        chrome.runtime.sendMessage({ action: 'capture_tab' }, (response) => {
+            if (!response || response.error || !response.dataUrl) {
+                showStatusCard(
+                    {
+                        title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+                        detail: WordMapI18n.t(currentUiLang, 'errorCaptureFailed'),
+                        state: 'error'
+                    },
+                    lastX,
+                    lastY
+                );
+                return;
+            }
+
+            const image = new Image();
+            image.onload = () => {
+                const scaleX = image.width / window.innerWidth;
+                const scaleY = image.height / window.innerHeight;
+
+                const cropCanvas = document.createElement('canvas');
+                cropCanvas.width = Math.max(1, Math.round(width * scaleX));
+                cropCanvas.height = Math.max(1, Math.round(height * scaleY));
+                const cropCtx = cropCanvas.getContext('2d');
+
+                cropCtx.drawImage(
+                    image,
+                    minX * scaleX,
+                    minY * scaleY,
+                    width * scaleX,
+                    height * scaleY,
+                    0,
+                    0,
+                    cropCanvas.width,
+                    cropCanvas.height
+                );
+
+                showStatusCard(
+                    {
+                        title: WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
+                        detail: WordMapI18n.t(currentUiLang, 'statusUploadingDetail'),
+                        state: 'progress'
+                    },
+                    lastX,
+                    lastY
+                );
+
+                chrome.runtime.sendMessage({
+                    action: 'process_image',
+                    imageBase64: cropCanvas.toDataURL('image/jpeg')
+                });
+            };
+            image.src = response.dataUrl;
+        });
     }
 
-    lastX = e.clientX + window.scrollX;
-    lastY = e.clientY + window.scrollY;
+    function cleanupCanvas() {
+        removeDrawHint();
+        document.body.classList.remove('wordmap-drawing-mode');
+        if (canvas) {
+            canvas.remove();
+            canvas = null;
+        }
+        isDrawing = false;
+        points = [];
+    }
 
-    cleanupCanvas();
-    showLoadingCard(t('capture_img'), lastX, lastY);
+    function showDrawHint() {
+        let hint = document.getElementById('wordmap-draw-hint');
+        if (!hint) {
+            hint = document.createElement('div');
+            hint.id = 'wordmap-draw-hint';
+            document.body.appendChild(hint);
+        }
+        updateDrawHintCopy();
+    }
 
-    chrome.runtime.sendMessage({ action: "capture_tab" }, (response) => {
-        if (!response || !response.dataUrl) {
-            showLoadingCard(t('capture_fail'), lastX, lastY, true);
+    function updateDrawHintCopy() {
+        const hint = document.getElementById('wordmap-draw-hint');
+        if (!hint) {
             return;
         }
-        var img = new Image();
-        img.onload = () => {
-            var scaleX = img.width / window.innerWidth;
-            var scaleY = img.height / window.innerHeight;
 
-            var cropCanvas = document.createElement('canvas');
-            cropCanvas.width = width * scaleX;
-            cropCanvas.height = height * scaleY;
-            var cropCtx = cropCanvas.getContext('2d');
+        const isRect = currentTool === 'rect';
+        const title = isRect
+            ? WordMapI18n.t(currentUiLang, 'drawHintRectTitle')
+            : WordMapI18n.t(currentUiLang, 'drawHintPencilTitle');
+        const description = isRect
+            ? WordMapI18n.t(currentUiLang, 'drawHintRectDesc')
+            : WordMapI18n.t(currentUiLang, 'drawHintPencilDesc');
+        const badge = isRect
+            ? WordMapI18n.t(currentUiLang, 'drawModeBadgeRect')
+            : WordMapI18n.t(currentUiLang, 'drawModeBadgeFreehand');
 
-            cropCtx.drawImage(
-                img,
-                minX * scaleX, minY * scaleY, width * scaleX, height * scaleY,
-                0, 0, cropCanvas.width, cropCanvas.height
-            );
-            var croppedBase64 = cropCanvas.toDataURL('image/jpeg');
-            showLoadingCard(t('upload_ocr'), lastX, lastY);
-            chrome.runtime.sendMessage({ action: "process_image", imageBase64: croppedBase64 });
-        };
-        img.src = response.dataUrl;
-    });
-}
+        hint.innerHTML = '';
 
-function cleanupCanvas() {
-    if (canvas) {
-        canvas.remove();
-        canvas = null;
+        const badgeElement = document.createElement('div');
+        badgeElement.className = 'wordmap-draw-hint-badge';
+        badgeElement.textContent = badge;
+
+        const titleElement = document.createElement('div');
+        titleElement.className = 'wordmap-draw-hint-title';
+        titleElement.textContent = title;
+
+        const descriptionElement = document.createElement('div');
+        descriptionElement.className = 'wordmap-draw-hint-desc';
+        descriptionElement.textContent = `${description} ${WordMapI18n.t(currentUiLang, 'drawHintFooter')}`;
+
+        hint.appendChild(badgeElement);
+        hint.appendChild(titleElement);
+        hint.appendChild(descriptionElement);
     }
-    isDrawing = false;
-}
 
-function getOrCreateCard(x, y) {
-    var card = document.getElementById('wordmap-result-card');
-    if (!card) {
-        card = document.createElement('div');
-        card.id = 'wordmap-result-card';
-        card.style.left = `${x + 15}px`;
-        card.style.top = `${y + 15}px`;
+    function removeDrawHint() {
+        const hint = document.getElementById('wordmap-draw-hint');
+        if (hint) {
+            hint.remove();
+        }
+    }
 
-        var handle = document.createElement('div');
-        handle.className = 'wordmap-drag-handle';
-        card.appendChild(handle);
+    function getOrCreateCard(x, y) {
+        clearCardAutoCloseTimer();
+        let card = document.getElementById('wordmap-result-card');
+        if (!card) {
+            card = document.createElement('div');
+            card.id = 'wordmap-result-card';
 
-        var content = document.createElement('div');
-        content.id = 'wordmap-card-content';
-        card.appendChild(content);
+            const header = document.createElement('div');
+            header.className = 'wordmap-card-header wordmap-drag-handle';
 
-        document.body.appendChild(card);
+            const brand = document.createElement('div');
+            brand.className = 'wordmap-card-brand';
 
-        var isDragging = false, dragStartX, dragStartY, initialLeft, initialTop;
-        handle.addEventListener('mousedown', (e) => {
-            isDragging = true;
-            dragStartX = e.clientX;
-            dragStartY = e.clientY;
+            const logo = document.createElement('div');
+            logo.className = 'wordmap-card-logo';
+            logo.textContent = 'WM';
+
+            const brandText = document.createElement('div');
+            brandText.className = 'wordmap-card-brand-text';
+
+            const title = document.createElement('div');
+            title.className = 'wordmap-card-title';
+            title.textContent = 'WordMap';
+
+            const subtitle = document.createElement('div');
+            subtitle.className = 'wordmap-card-subtitle';
+            subtitle.dataset.role = 'subtitle';
+
+            brandText.appendChild(title);
+            brandText.appendChild(subtitle);
+            brand.appendChild(logo);
+            brand.appendChild(brandText);
+
+            const closeButton = document.createElement('button');
+            closeButton.type = 'button';
+            closeButton.className = 'wordmap-card-close';
+            closeButton.dataset.role = 'close';
+            closeButton.textContent = '×';
+            closeButton.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                removeCard();
+            });
+
+            header.appendChild(brand);
+            header.appendChild(closeButton);
+
+            const content = document.createElement('div');
+            content.id = 'wordmap-card-content';
+
+            card.appendChild(header);
+            card.appendChild(content);
+            document.body.appendChild(card);
+
+            installCardInteractions(card, header);
+        }
+
+        updateCardStaticCopy();
+        positionCard(card, x, y);
+        return {
+            card: card,
+            content: document.getElementById('wordmap-card-content')
+        };
+    }
+
+    function installCardInteractions(card, handle) {
+        let isDraggingCard = false;
+        let dragStartX = 0;
+        let dragStartY = 0;
+        let initialLeft = 0;
+        let initialTop = 0;
+
+        handle.addEventListener('mousedown', (event) => {
+            if (event.target.closest('.wordmap-card-close')) {
+                return;
+            }
+
+            isDraggingCard = true;
+            dragStartX = event.clientX;
+            dragStartY = event.clientY;
             initialLeft = card.offsetLeft;
             initialTop = card.offsetTop;
             handle.style.cursor = 'grabbing';
-            e.preventDefault();
+            event.preventDefault();
         });
-        const onMouseMove = (e) => {
-            if (!isDragging) return;
-            const dx = e.clientX - dragStartX;
-            const dy = e.clientY - dragStartY;
+
+        const onMouseMove = (event) => {
+            if (!isDraggingCard) {
+                return;
+            }
+
+            const dx = event.clientX - dragStartX;
+            const dy = event.clientY - dragStartY;
             card.style.left = `${initialLeft + dx}px`;
             card.style.top = `${initialTop + dy}px`;
         };
+
         const onMouseUp = () => {
-            isDragging = false;
+            isDraggingCard = false;
             handle.style.cursor = 'grab';
         };
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
 
-        const closeHandler = (e) => {
-            if (!card.contains(e.target)) {
-                card.remove();
-                document.removeEventListener('mousedown', closeHandler);
-                document.removeEventListener('mousemove', onMouseMove);
-                document.removeEventListener('mouseup', onMouseUp);
+        const onOutsideMouseDown = (event) => {
+            if (!card.contains(event.target)) {
+                removeCard();
             }
         };
-        setTimeout(() => document.addEventListener('mousedown', closeHandler), 100);
-    }
-    return { card, content: document.getElementById('wordmap-card-content') };
-}
 
-function showLoadingCard(message, x, y, isError = false) {
-    const { content } = getOrCreateCard(x, y);
-    content.innerHTML = `<span style='font-size:14px; color:${isError ? 'red' : '#555'}; white-space:pre-wrap; display:block; max-width:300px;'>${message}</span>`;
-    if (isError) {
-        setTimeout(() => {
-            var card = document.getElementById('wordmap-result-card');
-            if (card) card.remove();
-        }, 3500);
-    }
-}
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+        const outsideClickTimer = window.setTimeout(() => {
+            document.addEventListener('mousedown', onOutsideMouseDown);
+        }, 80);
 
-function renderResult(data, x, y, ocrText = "") {
-    const { content } = getOrCreateCard(x, y);
-    content.innerHTML = "";
-
-    let fullTranslation = "";
-    let wordPairs = [];
-
-    if (Array.isArray(data)) wordPairs = data;
-    else if (data && typeof data === 'object') {
-        fullTranslation = data.full_translation || data.translation || "";
-        wordPairs = data.words || [];
+        card._wordmapCleanupFns = [
+            () => window.clearTimeout(outsideClickTimer),
+            () => document.removeEventListener('mousemove', onMouseMove),
+            () => document.removeEventListener('mouseup', onMouseUp),
+            () => document.removeEventListener('mousedown', onOutsideMouseDown)
+        ];
     }
 
-    if (wordPairs.length === 0 && !fullTranslation) {
-        content.innerHTML = `<span style='padding:10px; color:red;'>${t('ai_empty')}</span>`;
-        return;
+    function updateCardStaticCopy() {
+        const card = document.getElementById('wordmap-result-card');
+        if (!card) {
+            return;
+        }
+
+        const subtitle = card.querySelector('[data-role="subtitle"]');
+        const closeButton = card.querySelector('[data-role="close"]');
+        if (subtitle) {
+            subtitle.textContent = WordMapI18n.t(currentUiLang, 'cardSubtitle');
+        }
+        if (closeButton) {
+            closeButton.setAttribute('aria-label', WordMapI18n.t(currentUiLang, 'closeButtonAria'));
+            closeButton.setAttribute('title', WordMapI18n.t(currentUiLang, 'closeButtonAria'));
+        }
     }
 
-    if (ocrText) {
-        const ocrSection = document.createElement('div');
-        ocrSection.className = 'wordmap-section';
-        const title = document.createElement('div');
-        title.className = 'wordmap-section-title';
-        title.innerText = t('ocr_origin');
-        const textDiv = document.createElement('div');
-        textDiv.className = 'wordmap-ocr-text';
-        textDiv.innerText = ocrText;
-        ocrSection.appendChild(title);
-        ocrSection.appendChild(textDiv);
-        content.appendChild(ocrSection);
+    function clearCardAutoCloseTimer() {
+        if (cardAutoCloseTimer) {
+            window.clearTimeout(cardAutoCloseTimer);
+            cardAutoCloseTimer = null;
+        }
     }
 
-    if (fullTranslation) {
-        const fullSection = document.createElement('div');
-        fullSection.className = 'wordmap-section';
-        const title = document.createElement('div');
-        title.className = 'wordmap-section-title';
-        title.innerText = t('full_trans');
-        const fullText = document.createElement('div');
-        fullText.className = 'wordmap-full-translation';
-        fullText.innerText = fullTranslation;
-        fullSection.appendChild(title);
-        fullSection.appendChild(fullText);
-        content.appendChild(fullSection);
+    function removeCard() {
+        clearCardAutoCloseTimer();
+        const card = document.getElementById('wordmap-result-card');
+        if (!card) {
+            return;
+        }
+
+        if (Array.isArray(card._wordmapCleanupFns)) {
+            card._wordmapCleanupFns.forEach((cleanup) => cleanup());
+        }
+        card.remove();
     }
 
-    if (wordPairs.length > 0) {
-        const wordsSection = document.createElement('div');
-        wordsSection.className = 'wordmap-section';
-        const title = document.createElement('div');
-        title.className = 'wordmap-section-title';
-        title.innerText = t('word_break');
-        const wordsContainer = document.createElement('div');
-        wordsContainer.className = 'wordmap-words-container';
-
-        wordPairs.forEach(pair => {
-            const pairDiv = document.createElement('div');
-            pairDiv.className = 'word-pair';
-            const originalText = pair.src || pair.en || pair.text || pair.original || "???";
-            const translatedText = pair.dst || pair.zh || pair.translation || pair.Chinese || "无翻译/No Translation";
-            const enSpan = document.createElement('span');
-            enSpan.className = 'word-en';
-            enSpan.innerText = originalText;
-            const zhSpan = document.createElement('span');
-            zhSpan.className = 'word-zh';
-            zhSpan.innerText = translatedText;
-            pairDiv.appendChild(enSpan);
-            pairDiv.appendChild(zhSpan);
-            wordsContainer.appendChild(pairDiv);
+    function positionCard(card, x, y) {
+        requestAnimationFrame(() => {
+            const margin = 16;
+            const scrollLeft = window.scrollX;
+            const scrollTop = window.scrollY;
+            const cardWidth = card.offsetWidth || 420;
+            const cardHeight = card.offsetHeight || 240;
+            const idealLeft = x + 18;
+            const idealTop = y + 18;
+            const maxLeft = scrollLeft + window.innerWidth - cardWidth - margin;
+            const maxTop = scrollTop + window.innerHeight - cardHeight - margin;
+            const safeLeft = Math.max(scrollLeft + margin, Math.min(idealLeft, maxLeft));
+            const safeTop = Math.max(scrollTop + margin, Math.min(idealTop, maxTop));
+            card.style.left = `${safeLeft}px`;
+            card.style.top = `${safeTop}px`;
         });
-        wordsSection.appendChild(title);
-        wordsSection.appendChild(wordsContainer);
-        content.appendChild(wordsSection);
     }
-}
+
+    function showStatusCard(payload, x, y) {
+        const cardBundle = getOrCreateCard(x, y);
+        const content = cardBundle.content;
+        content.innerHTML = '';
+
+        const status = document.createElement('div');
+        status.className = `wordmap-status${payload.state === 'error' ? ' wordmap-status--error' : ''}`;
+
+        const iconWrapper = document.createElement('div');
+        iconWrapper.className = 'wordmap-status-visual';
+        if (payload.state === 'error') {
+            iconWrapper.textContent = '✕';
+            iconWrapper.classList.add('wordmap-status-error-icon');
+        } else {
+            const spinner = document.createElement('div');
+            spinner.className = 'wordmap-status-spinner';
+            iconWrapper.appendChild(spinner);
+        }
+
+        const copy = document.createElement('div');
+        copy.className = 'wordmap-status-copy';
+
+        const title = document.createElement('div');
+        title.className = 'wordmap-status-title';
+        title.textContent = payload.title;
+
+        copy.appendChild(title);
+
+        if (payload.detail) {
+            const detail = document.createElement('div');
+            detail.className = 'wordmap-status-detail';
+            detail.textContent = payload.detail;
+            copy.appendChild(detail);
+        }
+
+        status.appendChild(iconWrapper);
+        status.appendChild(copy);
+        content.appendChild(status);
+        positionCard(cardBundle.card, x, y);
+
+        if (payload.state === 'error') {
+            cardAutoCloseTimer = window.setTimeout(removeCard, 4200);
+        }
+    }
+
+    function renderResult(data, x, y, ocrText) {
+        const cardBundle = getOrCreateCard(x, y);
+        const content = cardBundle.content;
+        content.innerHTML = '';
+
+        let fullTranslation = '';
+        let wordPairs = [];
+
+        if (Array.isArray(data)) {
+            wordPairs = data;
+        } else if (data && typeof data === 'object') {
+            fullTranslation = data.full_translation || data.translation || '';
+            wordPairs = Array.isArray(data.words) ? data.words : [];
+        }
+
+        if (wordPairs.length === 0 && !fullTranslation) {
+            showStatusCard(
+                {
+                    title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+                    detail: WordMapI18n.t(currentUiLang, 'resultEmpty'),
+                    state: 'error'
+                },
+                x,
+                y
+            );
+            return;
+        }
+
+        if (ocrText) {
+            const ocrSection = createSection(WordMapI18n.t(currentUiLang, 'resultSectionDetectedText'), '📝');
+            const textBlock = document.createElement('div');
+            textBlock.className = 'wordmap-ocr-text';
+            textBlock.textContent = ocrText;
+            ocrSection.appendChild(textBlock);
+            content.appendChild(ocrSection);
+        }
+
+        if (fullTranslation) {
+            const translationSection = createSection(WordMapI18n.t(currentUiLang, 'resultSectionTranslation'), '✨');
+            const fullText = document.createElement('div');
+            fullText.className = 'wordmap-full-translation';
+            fullText.textContent = fullTranslation;
+            translationSection.appendChild(fullText);
+            content.appendChild(translationSection);
+        }
+
+        if (wordPairs.length > 0) {
+            const wordsSection = createSection(WordMapI18n.t(currentUiLang, 'resultSectionGlossary'), '🔎');
+            const wordsContainer = document.createElement('div');
+            wordsContainer.className = 'wordmap-words-container';
+
+            wordPairs.forEach((pair) => {
+                const pairDiv = document.createElement('div');
+                pairDiv.className = 'word-pair';
+
+                const originalText = pair.src || pair.en || pair.text || pair.original || '???';
+                const translatedText =
+                    pair.dst ||
+                    pair.zh ||
+                    pair.translation ||
+                    pair.Chinese ||
+                    WordMapI18n.t(currentUiLang, 'resultNoGloss');
+
+                const sourceSpan = document.createElement('span');
+                sourceSpan.className = 'word-en';
+                sourceSpan.textContent = originalText;
+
+                const targetSpan = document.createElement('span');
+                targetSpan.className = 'word-zh';
+                targetSpan.textContent = translatedText;
+
+                pairDiv.appendChild(sourceSpan);
+                pairDiv.appendChild(targetSpan);
+                wordsContainer.appendChild(pairDiv);
+            });
+
+            wordsSection.appendChild(wordsContainer);
+            content.appendChild(wordsSection);
+        }
+
+        positionCard(cardBundle.card, x, y);
+    }
+
+    function createSection(titleText, icon) {
+        const section = document.createElement('section');
+        section.className = 'wordmap-section';
+
+        const title = document.createElement('div');
+        title.className = 'wordmap-section-title';
+        title.textContent = `${icon} ${titleText}`;
+
+        section.appendChild(title);
+        return section;
+    }
+})();

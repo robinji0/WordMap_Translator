@@ -1,0 +1,17 @@
+{
+  "extensionName": {
+    "message": "WordMap 圈选翻译"
+  },
+  "extensionDescription": {
+    "message": "支持自由圈选与矩形框选，使用 OCR 识别任意网页文字，再交给 AI 即时翻译。"
+  },
+  "actionTitle": {
+    "message": "打开 WordMap 设置"
+  },
+  "commandFreehand": {
+    "message": "开启或关闭自由圈选模式"
+  },
+  "commandRectangle": {
+    "message": "开启或关闭矩形框选模式"
+  }
+}

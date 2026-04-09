@@ -1,144 +1,202 @@
+const STORAGE_KEYS = ['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang', 'uiLang'];
+const FORM_FIELD_IDS = ['ocrApiKey', 'apiBaseUrl', 'modelName', 'apiKey', 'sourceLang', 'targetLang'];
+
 let isDataLoaded = false;
-let currentUILang = navigator.language.startsWith('zh') ? 'zh' : 'en';
+let autoSaveTimer = null;
+let currentUiLang = WordMapI18n.detectBrowserUiLang();
 
-const i18nMap = {
-    zh: {
-        title: "⚙️ WordMap 通用设置",
-        ocrHelp: "<b>免费 OCR 引擎支持：</b><br>默认使用公共测试 Key，若报错频繁请 <a href='https://ocr.space/OCRAPI' target='_blank' class='link'>点此免费申请专属 Key</a>",
-        uiLangLabel: "界面语言 (UI Language):",
-        ocrKeyLabel: "OCR.space API Key:",
-        ocrKeyPlaceholder: "留空则使用默认 helloworld",
-        baseUrlLabel: "大模型接口地址 (Base URL):",
-        modelNameLabel: "大模型名称 (纯文本模型):",
-        modelNamePlaceholder: "例如: llama-3.3-70b-versatile",
-        apiKeyLabel: "大模型 API Key:",
-        sourceLangLabel: "你要抠的网页语言 (Source):",
-        targetLangLabel: "翻译目标语言 (Target):",
-        saveBtn: "保存配置",
-        saveSuccess: "✅ 保存成功！",
-        quickActions: "快速操作:",
-        pencilBtn: "🖍️ 铅笔画圈",
-        rectBtn: "🔲 矩形框选",
-        shortcutBtn: "⌨️ 自定义快捷键",
-        sysPageError: "⚠️ 插件无法在浏览器系统页面运行！",
-        sponsorBtn: "☕ 赞助开发者 (Sponsor)" // 赞助文案
-    },
-    en: {
-        title: "⚙️ WordMap Settings",
-        ocrHelp: "<b>Free OCR Support:</b><br>Using public key. If errors occur frequently, <a href='https://ocr.space/OCRAPI' target='_blank' class='link'>get a free private Key here</a>",
-        uiLangLabel: "UI Language:",
-        ocrKeyLabel: "OCR.space API Key:",
-        ocrKeyPlaceholder: "Leave blank for default 'helloworld'",
-        baseUrlLabel: "LLM Base URL:",
-        modelNameLabel: "Model Name (Text-only):",
-        modelNamePlaceholder: "e.g., llama-3.3-70b-versatile",
-        apiKeyLabel: "LLM API Key:",
-        sourceLangLabel: "Source Language (OCR):",
-        targetLangLabel: "Target Language (Translation):",
-        saveBtn: "Save Config",
-        saveSuccess: "✅ Saved successfully!",
-        quickActions: "Quick Actions:",
-        pencilBtn: "🖍️ Pencil Draw",
-        rectBtn: "🔲 Rect Select",
-        shortcutBtn: "⌨️ Custom Shortcuts",
-        sysPageError: "⚠️ Extension cannot run on browser system pages!",
-        sponsorBtn: "☕ Sponsor Developer" // 赞助文案
-    }
-};
+const elements = {};
 
-function renderI18n(lang) {
-    document.querySelectorAll('[data-i18n]').forEach(el => {
-        const key = el.getAttribute('data-i18n');
-        if (i18nMap[lang][key]) el.innerHTML = i18nMap[lang][key];
-    });
-    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
-        const key = el.getAttribute('data-i18n-placeholder');
-        if (i18nMap[lang][key]) el.placeholder = i18nMap[lang][key];
+document.addEventListener('DOMContentLoaded', initializePopup);
+
+function initializePopup() {
+    cacheElements();
+    bindEvents();
+
+    chrome.storage.local.get(STORAGE_KEYS, (result) => {
+        currentUiLang = WordMapI18n.getEffectiveUiLang(result.uiLang);
+        applyLocalizedUi({
+            uiLang: currentUiLang,
+            sourceLang: result.sourceLang || 'eng',
+            targetLang: result.targetLang || 'Chinese'
+        });
+        populateForm(result);
+        isDataLoaded = true;
+        backfillDefaultsIfNeeded(result);
     });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    chrome.storage.local.get(['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang', 'uiLang'], (result) => {
-        if (result.uiLang) currentUILang = result.uiLang;
-        document.getElementById('uiLang').value = currentUILang;
-        renderI18n(currentUILang);
-
-        if (result.apiBaseUrl) document.getElementById('apiBaseUrl').value = result.apiBaseUrl;
-        if (result.modelName) document.getElementById('modelName').value = result.modelName;
-        if (result.apiKey) document.getElementById('apiKey').value = result.apiKey;
-        if (result.targetLang) document.getElementById('targetLang').value = result.targetLang;
-        if (result.ocrApiKey) document.getElementById('ocrApiKey').value = result.ocrApiKey;
-        if (result.sourceLang) document.getElementById('sourceLang').value = result.sourceLang;
-
-        isDataLoaded = true;
+function cacheElements() {
+    FORM_FIELD_IDS.forEach((id) => {
+        elements[id] = document.getElementById(id);
     });
-});
 
-const inputIds = ['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang', 'uiLang'];
-inputIds.forEach(id => {
-    const element = document.getElementById(id);
-    ['input', 'change'].forEach(eventType => {
-        element.addEventListener(eventType, (e) => {
-            if (!isDataLoaded) return;
+    elements.saveBtn = document.getElementById('saveBtn');
+    elements.status = document.getElementById('status');
+    elements.drawPencilBtn = document.getElementById('drawPencilBtn');
+    elements.drawRectBtn = document.getElementById('drawRectBtn');
+    elements.shortcutBtn = document.getElementById('shortcutBtn');
+    elements.uiLangToggle = document.getElementById('uiLangToggle');
+    elements.uiLangToggleText = document.getElementById('uiLangToggleText');
+}
 
-            if (e.target.id === 'uiLang') {
-                currentUILang = e.target.value;
-                renderI18n(currentUILang);
-            }
-
-            chrome.storage.local.set({
-                apiBaseUrl: document.getElementById('apiBaseUrl').value.trim(),
-                modelName: document.getElementById('modelName').value.trim(),
-                apiKey: document.getElementById('apiKey').value.trim(),
-                targetLang: document.getElementById('targetLang').value,
-                ocrApiKey: document.getElementById('ocrApiKey').value.trim(),
-                sourceLang: document.getElementById('sourceLang').value,
-                uiLang: document.getElementById('uiLang').value
-            });
+function bindEvents() {
+    FORM_FIELD_IDS.forEach((id) => {
+        const element = document.getElementById(id);
+        ['input', 'change'].forEach((eventType) => {
+            element.addEventListener(eventType, handleFieldChange);
         });
     });
-});
 
-document.getElementById('saveBtn').addEventListener('click', () => {
-    let baseUrl = document.getElementById('apiBaseUrl').value.trim();
-    if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
-
-    chrome.storage.local.set({
-        apiBaseUrl: baseUrl,
-        modelName: document.getElementById('modelName').value.trim(),
-        apiKey: document.getElementById('apiKey').value.trim(),
-        targetLang: document.getElementById('targetLang').value,
-        ocrApiKey: document.getElementById('ocrApiKey').value.trim(),
-        sourceLang: document.getElementById('sourceLang').value,
-        uiLang: document.getElementById('uiLang').value
-    }, () => {
-        const status = document.getElementById('status');
-        status.style.display = 'block';
-        setTimeout(() => status.style.display = 'none', 2000);
+    elements.uiLangToggle.addEventListener('click', handleToggleUiLanguage);
+    elements.saveBtn.addEventListener('click', () => persistSettings(true));
+    elements.drawPencilBtn.addEventListener('click', () => sendDrawCommand('pencil'));
+    elements.drawRectBtn.addEventListener('click', () => sendDrawCommand('rect'));
+    elements.shortcutBtn.addEventListener('click', () => {
+        chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
     });
-});
+}
 
-function sendDrawCommand(mode) {
-    chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-        const currentTab = tabs[0];
-        if (currentTab.url.startsWith("chrome://") || currentTab.url.startsWith("edge://")) {
-            alert(i18nMap[currentUILang].sysPageError);
+function handleFieldChange() {
+    if (!isDataLoaded) {
+        return;
+    }
+    queueAutoSave();
+}
+
+function handleToggleUiLanguage() {
+    currentUiLang = currentUiLang === WordMapI18n.UI_LANG_ZH
+        ? WordMapI18n.UI_LANG_EN
+        : WordMapI18n.UI_LANG_ZH;
+
+    applyLocalizedUi({
+        uiLang: currentUiLang,
+        sourceLang: elements.sourceLang.value,
+        targetLang: elements.targetLang.value
+    });
+    persistSettings(false);
+}
+
+function queueAutoSave() {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(() => persistSettings(false), 180);
+}
+
+function applyLocalizedUi(state) {
+    const uiLang = WordMapI18n.normalizeUiLang(state.uiLang);
+    document.documentElement.lang = uiLang;
+    document.title = WordMapI18n.t(uiLang, 'appTitle');
+
+    document.querySelectorAll('[data-i18n]').forEach((element) => {
+        const key = element.dataset.i18n;
+        element.textContent = WordMapI18n.t(uiLang, key);
+    });
+
+    document.querySelectorAll('[data-i18n-placeholder]').forEach((element) => {
+        const key = element.dataset.i18nPlaceholder;
+        element.placeholder = WordMapI18n.t(uiLang, key);
+    });
+
+    renderSelectOptions(elements.sourceLang, WordMapI18n.getOcrLanguageOptions(uiLang), state.sourceLang || 'eng');
+    renderSelectOptions(elements.targetLang, WordMapI18n.getTargetLanguageOptions(uiLang), state.targetLang || 'Chinese');
+    updateUiLanguageToggle();
+
+    if (!elements.status.hidden) {
+        elements.status.textContent = WordMapI18n.t(uiLang, 'saveSuccess');
+    }
+}
+
+function updateUiLanguageToggle() {
+    const nextLang = currentUiLang === WordMapI18n.UI_LANG_ZH ? 'EN' : '中';
+    elements.uiLangToggleText.textContent = nextLang;
+    elements.uiLangToggle.setAttribute('title', WordMapI18n.t(currentUiLang, 'uiLanguageToggleTitle'));
+    elements.uiLangToggle.setAttribute('aria-label', WordMapI18n.t(currentUiLang, 'uiLanguageToggleTitle'));
+}
+
+function renderSelectOptions(selectElement, options, selectedValue) {
+    const valueToUse = selectedValue || selectElement.value;
+    const allowedValues = new Set(options.map((optionData) => optionData.value));
+    selectElement.innerHTML = '';
+
+    options.forEach((optionData) => {
+        const option = document.createElement('option');
+        option.value = optionData.value;
+        option.textContent = optionData.label;
+        selectElement.appendChild(option);
+    });
+
+    selectElement.value = allowedValues.has(valueToUse) ? valueToUse : options[0].value;
+}
+
+function populateForm(result) {
+    elements.ocrApiKey.value = result.ocrApiKey || '';
+    elements.apiBaseUrl.value = result.apiBaseUrl || '';
+    elements.modelName.value = result.modelName || '';
+    elements.apiKey.value = result.apiKey || '';
+    elements.sourceLang.value = result.sourceLang || 'eng';
+    elements.targetLang.value = result.targetLang || 'Chinese';
+}
+
+function collectSettings() {
+    return {
+        ocrApiKey: elements.ocrApiKey.value.trim(),
+        apiBaseUrl: normalizeBaseUrl(elements.apiBaseUrl.value),
+        modelName: elements.modelName.value.trim(),
+        apiKey: elements.apiKey.value.trim(),
+        uiLang: WordMapI18n.normalizeUiLang(currentUiLang),
+        sourceLang: elements.sourceLang.value || 'eng',
+        targetLang: elements.targetLang.value || 'Chinese'
+    };
+}
+
+function persistSettings(showFeedback) {
+    clearTimeout(autoSaveTimer);
+    const payload = collectSettings();
+    currentUiLang = payload.uiLang;
+
+    chrome.storage.local.set(payload, () => {
+        if (!showFeedback) {
             return;
         }
-        chrome.runtime.sendMessage({ action: "popup_toggle_draw", mode: mode, tabId: currentTab.id }, () => {
-            window.close();
-        });
+
+        elements.status.hidden = false;
+        elements.status.textContent = WordMapI18n.t(currentUiLang, 'saveSuccess');
+        setTimeout(() => {
+            elements.status.hidden = true;
+        }, 1800);
     });
 }
 
-document.getElementById('drawPencilBtn').addEventListener('click', () => sendDrawCommand('pencil'));
-document.getElementById('drawRectBtn').addEventListener('click', () => sendDrawCommand('rect'));
+function backfillDefaultsIfNeeded(result) {
+    const normalizedBaseUrl = normalizeBaseUrl(result.apiBaseUrl || '');
+    const needsBackfill =
+        !result.uiLang ||
+        !result.sourceLang ||
+        !result.targetLang ||
+        normalizedBaseUrl !== (result.apiBaseUrl || '');
 
-document.getElementById('shortcutBtn').addEventListener('click', () => {
-    chrome.tabs.create({url: "chrome://extensions/shortcuts"});
-});
+    if (needsBackfill) {
+        persistSettings(false);
+    }
+}
 
-// ==== 绑定赞助按钮逻辑 ====
-document.getElementById('sponsorBtn').addEventListener('click', () => {
-    chrome.tabs.create({url: "https://www.paypal.com/paypalme/robin326753"});
-});
+function normalizeBaseUrl(value) {
+    return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function sendDrawCommand(mode) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const currentTab = tabs && tabs[0];
+        const url = currentTab && currentTab.url ? currentTab.url : '';
+
+        if (!currentTab || /^(chrome|edge|about|brave|vivaldi|opera):\/\//i.test(url)) {
+            window.alert(WordMapI18n.t(currentUiLang, 'systemPageBlocked'));
+            return;
+        }
+
+        chrome.runtime.sendMessage(
+            { action: 'popup_toggle_draw', mode: mode, tabId: currentTab.id },
+            () => window.close()
+        );
+    });
+}

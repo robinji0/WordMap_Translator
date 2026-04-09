@@ -1,146 +1,409 @@
-function getMsg(key, lang, arg) {
-    const msgs = {
-        err_config: { zh: "请先配置大模型接口地址和名称！", en: "Please configure LLM Base URL and Model Name first!" },
-        ocr_extracting: { zh: `📡 正在通过 OCR 提取文字 (引擎: ${arg})...`, en: `📡 Extracting text via OCR (Engine: ${arg})...` },
-        err_ocr_fail: { zh: "未能在图片中识别出清晰的文字，请重新框选。", en: "Failed to recognize clear text in the image. Please re-select." },
-        llm_requesting: { zh: `🧠 识别成功: "${arg}..."\n正在请求大模型翻译...`, en: `🧠 OCR Success: "${arg}..."\nRequesting LLM translation...` }
-    };
-    return msgs[key][lang] || msgs[key]['zh'];
-}
+importScripts('i18n.js');
 
-chrome.commands.onCommand.addListener((command) => {
-    chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-        if (tabs[0]) {
-            if (command === "toggle-draw-mode") smartToggleDraw(tabs[0].id, 'pencil');
-            if (command === "toggle-rect-mode") smartToggleDraw(tabs[0].id, 'rect');
+const DEFAULT_SETTINGS = {
+    uiLang: WordMapI18n.detectBrowserUiLang(),
+    sourceLang: 'eng',
+    targetLang: 'Chinese'
+};
+
+chrome.runtime.onInstalled.addListener(() => {
+    chrome.storage.local.get(['uiLang', 'sourceLang', 'targetLang'], (result) => {
+        const updates = {};
+        if (!result.uiLang) updates.uiLang = DEFAULT_SETTINGS.uiLang;
+        if (!result.sourceLang) updates.sourceLang = DEFAULT_SETTINGS.sourceLang;
+        if (!result.targetLang) updates.targetLang = DEFAULT_SETTINGS.targetLang;
+        if (Object.keys(updates).length > 0) {
+            chrome.storage.local.set(updates);
         }
     });
 });
 
+chrome.commands.onCommand.addListener((command) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (!tabs[0]) {
+            return;
+        }
+        if (command === 'toggle-draw-mode') smartToggleDraw(tabs[0].id, 'pencil');
+        if (command === 'toggle-rect-mode') smartToggleDraw(tabs[0].id, 'rect');
+    });
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "popup_toggle_draw") {
+    if (request.action === 'popup_toggle_draw') {
         if (request.tabId) {
             smartToggleDraw(request.tabId, request.mode || 'pencil');
         } else {
-            chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs[0]) smartToggleDraw(tabs[0].id, request.mode || 'pencil');
             });
         }
-        sendResponse({ status: "ok" });
+        sendResponse({ status: 'ok' });
         return true;
     }
 
-    if (request.action === "capture_tab") {
-        chrome.tabs.captureVisibleTab(null, {format: "jpeg", quality: 100}, (dataUrl) => {
+    if (request.action === 'capture_tab') {
+        chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 100 }, (dataUrl) => {
+            if (chrome.runtime.lastError || !dataUrl) {
+                sendResponse({ error: chrome.runtime.lastError ? chrome.runtime.lastError.message : 'capture_failed' });
+                return;
+            }
             sendResponse({ dataUrl: dataUrl });
         });
         return true;
     }
 
-    if (request.action === "process_image") {
-        chrome.storage.local.get(['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang', 'uiLang'], async (result) => {
-            const { apiBaseUrl, modelName, apiKey, targetLang, ocrApiKey, sourceLang, uiLang } = result;
+    if (request.action === 'process_image') {
+        chrome.storage.local.get(
+            ['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang', 'uiLang'],
+            async (result) => {
+                const uiLang = WordMapI18n.getEffectiveUiLang(result.uiLang);
+                const tabId = sender.tab && sender.tab.id;
 
-            const currentUILang = uiLang || (navigator.language.startsWith('zh') ? 'zh' : 'en');
-            const currentOcrLang = sourceLang || 'eng';
-
-            if (!apiBaseUrl || !modelName) {
-                chrome.tabs.sendMessage(sender.tab.id, { action: "show_error", message: getMsg('err_config', currentUILang) });
-                return;
-            }
-
-            try {
-                chrome.tabs.sendMessage(sender.tab.id, { action: "update_status", message: getMsg('ocr_extracting', currentUILang, currentOcrLang) });
-
-                const extractedText = await performOCR(request.imageBase64, ocrApiKey || 'helloworld', currentOcrLang);
-                if (!extractedText || extractedText.trim() === '') {
-                    chrome.tabs.sendMessage(sender.tab.id, { action: "show_error", message: getMsg('err_ocr_fail', currentUILang) });
+                if (!tabId) {
+                    sendResponse({ status: 'no_tab' });
                     return;
                 }
 
-                const shortText = extractedText.substring(0, 15).replace(/\n/g, " ");
-                chrome.tabs.sendMessage(sender.tab.id, { action: "update_status", message: getMsg('llm_requesting', currentUILang, shortText) });
+                const apiBaseUrl = normalizeBaseUrl(result.apiBaseUrl);
+                const modelName = (result.modelName || '').trim();
+                const apiKey = (result.apiKey || '').trim();
+                const targetLang = result.targetLang || DEFAULT_SETTINGS.targetLang;
+                const ocrApiKey = (result.ocrApiKey || '').trim() || 'helloworld';
 
-                const jsonResult = await callUniversalLLM(extractedText, apiBaseUrl, modelName, apiKey, targetLang || "Chinese");
-                chrome.tabs.sendMessage(sender.tab.id, { action: "show_result", data: jsonResult, ocrText: extractedText });
+                // Important: OCR source language is independent from the UI language.
+                // Never derive this value from uiLang, otherwise OCR results may be wrong.
+                const ocrSourceLang = result.sourceLang || DEFAULT_SETTINGS.sourceLang;
 
-            } catch (err) {
-                chrome.tabs.sendMessage(sender.tab.id, { action: "show_error", message: err.message });
+                if (!apiBaseUrl || !modelName) {
+                    sendErrorStatus(tabId, uiLang, WordMapI18n.t(uiLang, 'errorMissingConfig'));
+                    sendResponse({ status: 'missing_config' });
+                    return;
+                }
+
+                try {
+                    sendProgressStatus(tabId, uiLang, {
+                        title: WordMapI18n.t(uiLang, 'statusOcrTitle'),
+                        detail: WordMapI18n.t(uiLang, 'statusOcrDetail', {
+                            engine: ocrSourceLang,
+                            engineLabel: WordMapI18n.getOcrLanguageLabel(ocrSourceLang, uiLang)
+                        })
+                    });
+
+                    const extractedText = await performOCR(request.imageBase64, ocrApiKey, ocrSourceLang, uiLang);
+                    if (!extractedText || extractedText.trim() === '') {
+                        sendErrorStatus(tabId, uiLang, WordMapI18n.t(uiLang, 'errorNoText'));
+                        sendResponse({ status: 'no_text' });
+                        return;
+                    }
+
+                    sendProgressStatus(tabId, uiLang, {
+                        title: WordMapI18n.t(uiLang, 'statusTranslateTitle'),
+                        detail: WordMapI18n.t(uiLang, 'statusTranslateDetail', {
+                            preview: WordMapI18n.clampTextPreview(extractedText, 46)
+                        })
+                    });
+
+                    const jsonResult = await callUniversalLLM(
+                        extractedText,
+                        apiBaseUrl,
+                        modelName,
+                        apiKey,
+                        targetLang,
+                        uiLang
+                    );
+
+                    chrome.tabs.sendMessage(tabId, {
+                        action: 'show_result',
+                        data: jsonResult,
+                        ocrText: extractedText,
+                        uiLang: uiLang,
+                        targetLang: targetLang
+                    });
+                    sendResponse({ status: 'ok' });
+                } catch (error) {
+                    const message = error && error.message
+                        ? error.message
+                        : WordMapI18n.t(uiLang, 'errorUnknown', { message: String(error) });
+                    sendErrorStatus(tabId, uiLang, message);
+                    sendResponse({ status: 'error', message: message });
+                }
             }
-        });
+        );
         return true;
     }
 });
 
 function smartToggleDraw(tabId, mode) {
-    chrome.tabs.sendMessage(tabId, { action: "toggle_draw", mode: mode }, (response) => {
-        if (chrome.runtime.lastError) {
-            chrome.scripting.insertCSS({ target: { tabId: tabId }, files: ["style.css"] }).then(() => {
-                chrome.scripting.executeScript({ target: { tabId: tabId }, files: ["content.js"] }).then(() => {
-                    chrome.tabs.sendMessage(tabId, { action: "toggle_draw", mode: mode });
-                }).catch(err => console.error("注入 js 失败", err));
-            });
+    chrome.tabs.sendMessage(tabId, { action: 'toggle_draw', mode: mode }, () => {
+        if (!chrome.runtime.lastError) {
+            return;
         }
+
+        chrome.scripting
+            .insertCSS({ target: { tabId: tabId }, files: ['style.css'] })
+            .then(() => chrome.scripting.executeScript({ target: { tabId: tabId }, files: ['i18n.js', 'content.js'] }))
+            .then(() => chrome.tabs.sendMessage(tabId, { action: 'toggle_draw', mode: mode }))
+            .catch((error) => {
+                console.error('WordMap injection failed:', error);
+            });
     });
 }
 
-async function performOCR(base64Image, ocrApiKey, sourceLang) {
+function sendProgressStatus(tabId, uiLang, payload) {
+    chrome.tabs.sendMessage(tabId, {
+        action: 'show_status',
+        uiLang: uiLang,
+        state: 'progress',
+        title: payload.title,
+        detail: payload.detail
+    });
+}
+
+function sendErrorStatus(tabId, uiLang, detail) {
+    chrome.tabs.sendMessage(tabId, {
+        action: 'show_status',
+        uiLang: uiLang,
+        state: 'error',
+        title: WordMapI18n.t(uiLang, 'errorTitle'),
+        detail: detail
+    });
+}
+
+async function performOCR(base64Image, ocrApiKey, ocrSourceLang, uiLang) {
     const formData = new FormData();
     formData.append('base64image', base64Image);
-    formData.append('language', sourceLang);
+    formData.append('language', ocrSourceLang);
     formData.append('scale', 'true');
     formData.append('OCREngine', '1');
     formData.append('apikey', ocrApiKey);
 
-    const response = await fetch('https://api.ocr.space/parse/image', { method: 'POST', body: formData });
-    const data = await response.json();
-    if (data.IsErroredOnProcessing) throw new Error(`OCR Error: ${data.ErrorMessage[0]}`);
-    if (data.ParsedResults && data.ParsedResults.length > 0) return data.ParsedResults[0].ParsedText;
-    return "";
-}
-
-async function callUniversalLLM(text, apiBaseUrl, modelName, apiKey, targetLang) {
-    // ==== 核心修复：智能补全或裁剪 API 后缀 ====
-    let endpoint = apiBaseUrl.trim();
-    if (!endpoint.endsWith('/chat/completions')) {
-        endpoint = endpoint.replace(/\/$/, '') + '/chat/completions';
+    let response;
+    try {
+        response = await fetch('https://api.ocr.space/parse/image', {
+            method: 'POST',
+            body: formData
+        });
+    } catch (error) {
+        throw new Error(WordMapI18n.t(uiLang, 'errorUnknown', { message: error.message || String(error) }));
     }
 
-    const systemPrompt = `You are a professional bilingual translator. 
-Task: You MUST translate the user's text strictly into ${targetLang}.
-CRITICAL RULES:
-1. TARGET LANGUAGE ENFORCEMENT: The 'full_translation' AND every 'dst' value MUST be in ${targetLang}. Do NOT use English unless ${targetLang} is English!
-2. FORMAT: You MUST respond ONLY with a raw JSON object. Do not output markdown code blocks.
-3. COMPLETENESS: DO NOT SKIP ANY WORDS. Every single word, particle, and grammatical marker from the source text MUST be accounted for in the "words" array.
-4. The JSON object MUST strictly follow this structure:
-{
-  "full_translation": "The fluent and complete translation of the entire text strictly in ${targetLang}",
-  "words": [
-    {"src": "original word or particle", "dst": "translation or grammatical explanation strictly in ${targetLang}"}
-  ]
-}`;
+    let data;
+    try {
+        data = await response.json();
+    } catch (error) {
+        throw new Error(WordMapI18n.t(uiLang, 'errorOcrEngine', { message: response.statusText || response.status }));
+    }
+
+    if (!response.ok || data.IsErroredOnProcessing) {
+        const rawMessage = Array.isArray(data.ErrorMessage)
+            ? data.ErrorMessage.filter(Boolean).join('; ')
+            : data.ErrorMessage || data.ErrorDetails || response.statusText || response.status;
+        throw new Error(WordMapI18n.t(uiLang, 'errorOcrEngine', { message: rawMessage }));
+    }
+
+    if (data.ParsedResults && data.ParsedResults.length > 0) {
+        return data.ParsedResults
+            .map((item) => item.ParsedText || '')
+            .join('\n')
+            .trim();
+    }
+
+    return '';
+}
+
+async function callUniversalLLM(text, apiBaseUrl, modelName, apiKey, targetLang, uiLang) {
+    const endpoint = resolveChatCompletionsEndpoint(apiBaseUrl);
     const headers = { 'Content-Type': 'application/json' };
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    if (apiKey) {
+        headers.Authorization = `Bearer ${apiKey}`;
+    }
 
     const payload = {
         model: modelName,
         messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: text }
+            {
+                role: 'system',
+                content: buildTranslationSystemPrompt(targetLang)
+            },
+            {
+                role: 'user',
+                content: text
+            }
         ],
         temperature: 0.1
     };
-    const response = await fetch(endpoint, { method: 'POST', headers: headers, body: JSON.stringify(payload) });
-    if (!response.ok) throw new Error(`AI Request Failed (HTTP ${response.status})`);
-    const data = await response.json();
-    if (!data.choices || data.choices.length === 0) throw new Error("AI returned empty data.");
-    let resultText = data.choices[0].message.content.trim();
-    if (resultText.startsWith('```json')) resultText = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
-    else if (resultText.startsWith('```')) resultText = resultText.replace(/```/g, '').trim();
+
+    let response;
+    try {
+        response = await fetch(endpoint, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(payload)
+        });
+    } catch (error) {
+        throw new Error(WordMapI18n.t(uiLang, 'errorUnknown', { message: error.message || String(error) }));
+    }
+
+    const rawText = await response.text();
+    if (!response.ok) {
+        throw new Error(
+            WordMapI18n.t(uiLang, 'errorAiRequestDetailed', {
+                status: response.status,
+                endpoint: endpoint,
+                detail: extractProviderErrorMessage(rawText) || response.statusText || String(response.status)
+            })
+        );
+    }
+
+    let data;
+    try {
+        data = rawText ? JSON.parse(rawText) : null;
+    } catch (error) {
+        throw new Error(WordMapI18n.t(uiLang, 'errorAiEmpty'));
+    }
+
+    if (!data || !data.choices || !data.choices.length || !data.choices[0].message || !data.choices[0].message.content) {
+        throw new Error(WordMapI18n.t(uiLang, 'errorAiEmpty'));
+    }
+
+    const resultText = String(data.choices[0].message.content || '').trim();
 
     try {
-        return JSON.parse(resultText);
-    } catch (parseError) {
-        throw new Error(`Parse JSON failed.\nModel output: ${resultText}`);
+        return parseJsonFromModelOutput(resultText);
+    } catch (error) {
+        throw new Error(
+            `${WordMapI18n.t(uiLang, 'errorJsonParse')}
+${WordMapI18n.clampTextPreview(resultText, 220)}`
+        );
     }
+}
+
+function buildTranslationSystemPrompt(targetLang) {
+    return `You are a professional translation engine.
+Your task is to translate OCR text strictly into ${targetLang}.
+
+Rules:
+1. Output ONLY a raw JSON object. Do not use markdown.
+2. The value of "full_translation" must be a fluent translation written entirely in ${targetLang}.
+3. Every value in "words[].dst" must also be written in ${targetLang}.
+4. Preserve names, numbers, punctuation, and line-break meaning whenever possible.
+5. Do not omit any meaningful source unit. Every meaningful token, particle, or phrase should be covered in the "words" array.
+6. If OCR is noisy, make the most likely translation, but stay conservative and do not invent extra content.
+
+Return exactly this shape:
+{
+  "full_translation": "A natural full translation in ${targetLang}",
+  "words": [
+    { "src": "source token", "dst": "translation or brief explanation in ${targetLang}" }
+  ]
+}`;
+}
+
+function parseJsonFromModelOutput(outputText) {
+    const stripped = stripMarkdownCodeFences(outputText).trim();
+    try {
+        return JSON.parse(stripped);
+    } catch (error) {
+        const extracted = extractFirstBalancedJsonObject(stripped);
+        if (!extracted) {
+            throw error;
+        }
+        return JSON.parse(extracted);
+    }
+}
+
+function stripMarkdownCodeFences(text) {
+    return String(text || '')
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/```$/i, '')
+        .trim();
+}
+
+function extractFirstBalancedJsonObject(text) {
+    const source = String(text || '');
+    const startIndex = source.indexOf('{');
+    if (startIndex === -1) {
+        return null;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let index = startIndex; index < source.length; index += 1) {
+        const char = source[index];
+
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+
+        if (char === '\\') {
+            escaped = true;
+            continue;
+        }
+
+        if (char === '"') {
+            inString = !inString;
+            continue;
+        }
+
+        if (inString) {
+            continue;
+        }
+
+        if (char === '{') {
+            depth += 1;
+        } else if (char === '}') {
+            depth -= 1;
+            if (depth === 0) {
+                return source.slice(startIndex, index + 1);
+            }
+        }
+    }
+
+    return null;
+}
+
+function normalizeBaseUrl(value) {
+    return String(value || '').trim().replace(/\/+$/, '');
+}
+
+
+function resolveChatCompletionsEndpoint(value) {
+    const normalized = normalizeBaseUrl(value);
+    if (!normalized) {
+        return '';
+    }
+
+    if (/\/chat\/completions$/i.test(normalized)) {
+        return normalized;
+    }
+
+    return `${normalized}/chat/completions`;
+}
+
+function extractProviderErrorMessage(rawText) {
+    const text = String(rawText || '').trim();
+    if (!text) {
+        return '';
+    }
+
+    try {
+        const parsed = JSON.parse(text);
+        if (typeof parsed.error === 'string') {
+            return parsed.error;
+        }
+        if (parsed.error && typeof parsed.error.message === 'string') {
+            return parsed.error.message;
+        }
+        if (typeof parsed.message === 'string') {
+            return parsed.message;
+        }
+    } catch (error) {
+        // Fall through to plain text.
+    }
+
+    return WordMapI18n.clampTextPreview(text, 180);
 }

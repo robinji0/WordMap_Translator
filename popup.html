@@ -1,96 +1,134 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <style>
-        body { width: 320px; padding: 15px; font-family: sans-serif; }
-        input, select { width: 100%; padding: 8px; margin: 6px 0 12px 0; box-sizing: border-box; }
-        button { width: 100%; padding: 10px; color: white; border: none; cursor: pointer; border-radius: 4px; font-weight: bold;}
-        .btn-save { background: #4CAF50; }
-        .btn-save:hover { background: #45a049; }
-        .btn-draw { background: #2196F3; flex: 1; }
-        .btn-draw:hover { background: #1976D2; }
-        .btn-rect { background: #9C27B0; flex: 1; }
-        .btn-rect:hover { background: #7B1FA2; }
-        .btn-shortcut { background: #FF9800; margin-top: 10px; }
-        .btn-shortcut:hover { background: #F57C00; }
-        label { font-size: 13px; font-weight: bold; color: #333; }
-        hr { border: 0; border-top: 1px solid #eee; margin: 15px 0; }
-        .help-text { font-size: 11px; color: #666; background: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 10px;}
-        .link { color: #2196F3; text-decoration: none; }
-        .action-group { display: flex; gap: 10px; margin-top: 10px; }
-        /* 新增赞助按钮样式 */
-        .sponsor-container { text-align: center; margin-top: 15px; }
-        .sponsor-link { color: #E91E63; text-decoration: none; font-size: 13px; font-weight: bold; padding: 5px 10px; border-radius: 15px; background: #fce4ec; transition: all 0.3s; display: inline-block; cursor: pointer; }
-        .sponsor-link:hover { background: #f8bbd0; transform: scale(1.05); }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WordMap</title>
+    <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-<h3 data-i18n="title">⚙️ WordMap 通用设置</h3>
+<main class="popup-shell">
+    <header class="topbar">
+        <div class="brand">
+            <img class="brand-logo" src="assets/logo.svg" alt="WordMap logo">
+            <div class="brand-copy">
+                <h1 class="brand-title" data-i18n="appTitleCompact"></h1>
+                <p class="brand-subtitle" data-i18n="appSubtitleCompact"></p>
+            </div>
+        </div>
 
-<div class="help-text" data-i18n="ocrHelp">
-    <b>免费 OCR 引擎支持：</b><br>
-    默认使用公共测试 Key，若报错频繁请 <a href="https://ocr.space/OCRAPI" target="_blank" class="link">点此免费申请专属 Key</a>
-</div>
+        <button id="uiLangToggle" class="lang-toggle" type="button">
+            <span class="lang-toggle-icon">🌐</span>
+            <span id="uiLangToggleText" class="lang-toggle-text">EN</span>
+        </button>
+    </header>
 
-<label data-i18n="uiLangLabel">界面语言 (UI Language):</label>
-<select id="uiLang">
-    <option value="zh">简体中文 (Chinese)</option>
-    <option value="en">English</option>
-</select>
+    <section class="panel panel--actions">
+        <div class="section-head section-head--compact">
+            <div>
+                <h2 data-i18n="sectionActionTitle"></h2>
+                <p data-i18n="sectionActionDescCompact"></p>
+            </div>
+            <button id="shortcutBtn" class="shortcut-chip" type="button" data-i18n="openShortcutsShort"></button>
+        </div>
 
-<label data-i18n="ocrKeyLabel">OCR.space API Key:</label>
-<input type="password" id="ocrApiKey" data-i18n-placeholder="ocrKeyPlaceholder" placeholder="留空则使用默认 helloworld">
+        <div class="tool-row">
+            <button id="drawPencilBtn" class="tool-btn" type="button">
+                <span class="tool-icon tool-icon--blue" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 20l3.2-.8 9.9-9.9a2.4 2.4 0 0 0-3.4-3.4L3.8 15.8 3 19z"></path>
+                        <path d="M12.6 6.9l4.5 4.5"></path>
+                        <path d="M14 20h6"></path>
+                    </svg>
+                </span>
+                <span class="tool-copy">
+                    <span class="tool-label" data-i18n="drawPencilLabel"></span>
+                    <span class="tool-desc" data-i18n="drawPencilDescShort"></span>
+                </span>
+            </button>
 
-<label data-i18n="baseUrlLabel">大模型接口地址 (Base URL):</label>
-<input type="text" id="apiBaseUrl" placeholder="https://api.openai.com/v1">
+            <button id="drawRectBtn" class="tool-btn" type="button">
+                <span class="tool-icon tool-icon--purple" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="4.5" y="6" width="15" height="12" rx="2.5"></rect>
+                        <path d="M8 10h8"></path>
+                        <path d="M8 14h5"></path>
+                    </svg>
+                </span>
+                <span class="tool-copy">
+                    <span class="tool-label" data-i18n="drawRectLabel"></span>
+                    <span class="tool-desc" data-i18n="drawRectDescShort"></span>
+                </span>
+            </button>
+        </div>
 
-<label data-i18n="modelNameLabel">大模型名称 (纯文本模型):</label>
-<input type="text" id="modelName" data-i18n-placeholder="modelNamePlaceholder" placeholder="例如: llama-3.3-70b-versatile">
+        <p class="tool-note" data-i18n="actionHintCompact"></p>
+    </section>
 
-<label data-i18n="apiKeyLabel">大模型 API Key:</label>
-<input type="password" id="apiKey" placeholder="sk-...">
+    <section class="panel">
+        <div class="section-head">
+            <div>
+                <h2 data-i18n="sectionLanguageTitle"></h2>
+                <p data-i18n="sectionLanguageDescCompact"></p>
+            </div>
+            <div class="mini-badge" data-i18n="ocrUiSeparatedBadge"></div>
+        </div>
 
-<label data-i18n="sourceLangLabel">你要抠的网页语言 (Source):</label>
-<select id="sourceLang">
-    <option value="eng">英语 (English)</option>
-    <option value="jpn">日语 (Japanese)</option>
-    <option value="kor">韩语 (Korean)</option>
-    <option value="fre">法语 (French)</option>
-    <option value="spa">西班牙语 (Spanish)</option>
-    <option value="ger">德语 (German)</option>
-    <option value="rus">俄语 (Russian)</option>
-    <option value="chs">中文 (Chinese)</option>
-</select>
+        <div class="field-grid field-grid--2">
+            <div class="field-group">
+                <label for="sourceLang" data-i18n="sourceLangLabel"></label>
+                <select id="sourceLang"></select>
+            </div>
+            <div class="field-group">
+                <label for="targetLang" data-i18n="targetLangLabel"></label>
+                <select id="targetLang"></select>
+            </div>
+        </div>
 
-<label data-i18n="targetLangLabel">翻译目标语言 (Target):</label>
-<select id="targetLang">
-    <option value="Chinese">中文 (Chinese)</option>
-    <option value="English">英文 (English)</option>
-    <option value="Japanese">日文 (Japanese)</option>
-    <option value="Korean">韩文 (Korean)</option>
-    <option value="French">法文 (French)</option>
-    <option value="Spanish">西班牙文 (Spanish)</option>
-    <option value="German">德文 (German)</option>
-    <option value="Russian">俄文 (Russian)</option>
-</select>
+        <p class="helper-inline" data-i18n="sourceLangHintCompact"></p>
+    </section>
 
-<button id="saveBtn" class="btn-save" data-i18n="saveBtn">保存配置</button>
-<p id="status" style="color: green; display: none; font-size: 12px; margin-top:5px;" data-i18n="saveSuccess">✅ 保存成功！</p>
+    <section class="panel">
+        <div class="section-head">
+            <div>
+                <h2 data-i18n="sectionConnectionTitle"></h2>
+                <p data-i18n="sectionConnectionDescCompact"></p>
+            </div>
+            <a href="https://ocr.space/OCRAPI" target="_blank" rel="noreferrer" class="mini-link" data-i18n="ocrKeyHelpLinkShort"></a>
+        </div>
 
-<hr>
+        <div class="field-grid">
+            <div class="field-group field-group--full">
+                <label for="apiBaseUrl" data-i18n="apiBaseUrlLabel"></label>
+                <input type="text" id="apiBaseUrl" data-i18n-placeholder="apiBaseUrlPlaceholder" autocomplete="off" spellcheck="false">
+            </div>
 
-<label data-i18n="quickActions">快速操作:</label>
-<div class="action-group">
-    <button id="drawPencilBtn" class="btn-draw" data-i18n="pencilBtn">🖍️ 铅笔画圈</button>
-    <button id="drawRectBtn" class="btn-rect" data-i18n="rectBtn">🔲 矩形框选</button>
-</div>
-<button id="shortcutBtn" class="btn-shortcut" data-i18n="shortcutBtn">⌨️ 自定义快捷键</button>
+            <div class="field-group">
+                <label for="modelName" data-i18n="modelNameLabel"></label>
+                <input type="text" id="modelName" data-i18n-placeholder="modelNamePlaceholder" autocomplete="off" spellcheck="false">
+            </div>
 
-<div class="sponsor-container">
-    <a id="sponsorBtn" class="sponsor-link" data-i18n="sponsorBtn">☕ 赞助开发者 (Sponsor)</a>
-</div>
+            <div class="field-group">
+                <label for="ocrApiKey" data-i18n="ocrApiKeyLabel"></label>
+                <input type="password" id="ocrApiKey" data-i18n-placeholder="ocrApiKeyPlaceholder">
+            </div>
 
+            <div class="field-group field-group--full">
+                <label for="apiKey" data-i18n="apiKeyLabel"></label>
+                <input type="password" id="apiKey" data-i18n-placeholder="apiKeyPlaceholder">
+            </div>
+        </div>
+
+        <p class="helper-inline helper-inline--muted" data-i18n="ocrKeyHelpBodyCompact"></p>
+    </section>
+
+    <footer class="footer-bar">
+        <button id="saveBtn" class="save-btn" type="button" data-i18n="saveSettings"></button>
+        <span id="status" class="status-pill" hidden></span>
+    </footer>
+</main>
+
+<script src="i18n.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

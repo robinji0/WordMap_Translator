@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "WordMap 圈选翻译",
-  "version": "1.0",
-  "description": "支持铅笔画圈与矩形框选，利用视觉/OCR技术实现万物皆可抠图翻译。",
+  "default_locale": "en",
+  "name": "__MSG_extensionName__",
+  "version": "1.1.1",
+  "description": "__MSG_extensionDescription__",
   "permissions": [
     "storage",
     "activeTab",
@@ -12,17 +13,36 @@
   "host_permissions": [
     "<all_urls>"
   ],
+  "icons": {
+    "16": "assets/icon16.png",
+    "32": "assets/icon32.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_title": "__MSG_actionTitle__",
+    "default_icon": {
+      "16": "assets/icon16.png",
+      "32": "assets/icon32.png",
+      "48": "assets/icon48.png"
+    }
   },
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "css": ["style.css"]
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "i18n.js",
+        "content.js"
+      ],
+      "css": [
+        "style.css"
+      ]
     }
   ],
   "commands": {
@@ -31,14 +51,14 @@
         "default": "Alt+T",
         "mac": "Alt+T"
       },
-      "description": "开启/关闭铅笔画圈模式"
+      "description": "__MSG_commandFreehand__"
     },
     "toggle-rect-mode": {
       "suggested_key": {
         "default": "Alt+R",
         "mac": "Alt+R"
       },
-      "description": "开启/关闭矩形框选模式"
+      "description": "__MSG_commandRectangle__"
     }
   }
 }
