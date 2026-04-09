@@ -2,11 +2,15 @@
   "manifest_version": 3,
   "name": "WordMap 圈选翻译",
   "version": "1.0",
-  "description": "画圈提取文字，并提供大模型的整句翻译与词对词精准拆解。",
+  "description": "支持铅笔画圈与矩形框选，利用视觉/OCR技术实现万物皆可抠图翻译。",
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
   ],
   "action": {
     "default_popup": "popup.html"
@@ -27,7 +31,14 @@
         "default": "Alt+T",
         "mac": "Alt+T"
       },
-      "description": "开启/关闭画笔画圈模式"
+      "description": "开启/关闭铅笔画圈模式"
+    },
+    "toggle-rect-mode": {
+      "suggested_key": {
+        "default": "Alt+R",
+        "mac": "Alt+R"
+      },
+      "description": "开启/关闭矩形框选模式"
     }
   }
 }

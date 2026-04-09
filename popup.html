@@ -8,14 +8,17 @@
         button { width: 100%; padding: 10px; color: white; border: none; cursor: pointer; border-radius: 4px; font-weight: bold;}
         .btn-save { background: #4CAF50; }
         .btn-save:hover { background: #45a049; }
-        .btn-draw { background: #2196F3; margin-top: 15px; }
+        .btn-draw { background: #2196F3; flex: 1; }
         .btn-draw:hover { background: #1976D2; }
+        .btn-rect { background: #9C27B0; flex: 1; }
+        .btn-rect:hover { background: #7B1FA2; }
         .btn-shortcut { background: #FF9800; margin-top: 10px; }
         .btn-shortcut:hover { background: #F57C00; }
         label { font-size: 13px; font-weight: bold; color: #333; }
         hr { border: 0; border-top: 1px solid #eee; margin: 15px 0; }
         .help-text { font-size: 11px; color: #666; background: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 10px;}
         .link { color: #2196F3; text-decoration: none; }
+        .action-group { display: flex; gap: 10px; margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -23,11 +26,11 @@
 
 <div class="help-text">
     <b>免费 OCR 引擎支持：</b><br>
-    默认使用公共测试 Key，若报错频繁请 <a href="https://ocr.space/OCRAPI" target="_blank" class="link">点此免费申请专属 Key</a> (每月2.5万次)
+    默认使用公共测试 Key，若报错频繁请 <a href="https://ocr.space/OCRAPI" target="_blank" class="link">点此免费申请专属 Key</a>
 </div>
 
 <label>OCR.space API Key:</label>
-<input type="text" id="ocrApiKey" placeholder="留空则使用默认 helloworld">
+<input type="password" id="ocrApiKey" placeholder="留空则使用默认 helloworld">
 
 <label>大模型接口地址 (Base URL):</label>
 <input type="text" id="apiBaseUrl" placeholder="https://api.openai.com/v1">
@@ -55,6 +58,11 @@
     <option value="Chinese">中文 (Chinese)</option>
     <option value="English">英文 (English)</option>
     <option value="Japanese">日文 (Japanese)</option>
+    <option value="Korean">韩文 (Korean)</option>
+    <option value="French">法文 (French)</option>
+    <option value="Spanish">西班牙文 (Spanish)</option>
+    <option value="German">德文 (German)</option>
+    <option value="Russian">俄文 (Russian)</option>
 </select>
 
 <button id="saveBtn" class="btn-save">保存配置</button>
@@ -63,7 +71,10 @@
 <hr>
 
 <label>快速操作:</label>
-<button id="drawBtn" class="btn-draw">🖍️ 立即抠图翻译</button>
+<div class="action-group">
+    <button id="drawPencilBtn" class="btn-draw">🖍️ 铅笔画圈</button>
+    <button id="drawRectBtn" class="btn-rect">🔲 矩形框选</button>
+</div>
 <button id="shortcutBtn" class="btn-shortcut">⌨️ 自定义快捷键</button>
 
 <script src="popup.js"></script>
