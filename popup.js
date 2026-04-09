@@ -1,75 +1,58 @@
-// 页面加载时读取配置
 document.addEventListener('DOMContentLoaded', () => {
-    chrome.storage.local.get(['apiBaseUrl', 'modelName', 'apiKey', 'targetLang'], (result) => {
+    chrome.storage.local.get(['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey'], (result) => {
         if (result.apiBaseUrl) document.getElementById('apiBaseUrl').value = result.apiBaseUrl;
         if (result.modelName) document.getElementById('modelName').value = result.modelName;
         if (result.apiKey) document.getElementById('apiKey').value = result.apiKey;
         if (result.targetLang) document.getElementById('targetLang').value = result.targetLang;
+        if (result.ocrApiKey) document.getElementById('ocrApiKey').value = result.ocrApiKey;
     });
 });
 
-// 静默自动保存机制：监听所有输入框，用户输入即保存，防丢失
-const inputIds = ['apiBaseUrl', 'modelName', 'apiKey', 'targetLang'];
+// 实时自动保存
+const inputIds = ['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey'];
 inputIds.forEach(id => {
     document.getElementById(id).addEventListener('input', () => {
-        const config = {
+        chrome.storage.local.set({
             apiBaseUrl: document.getElementById('apiBaseUrl').value.trim(),
             modelName: document.getElementById('modelName').value.trim(),
             apiKey: document.getElementById('apiKey').value.trim(),
-            targetLang: document.getElementById('targetLang').value
-        };
-        chrome.storage.local.set(config);
+            targetLang: document.getElementById('targetLang').value,
+            ocrApiKey: document.getElementById('ocrApiKey').value.trim()
+        });
     });
 });
 
-// 点击明确的保存按钮（提供视觉反馈，并做最终的格式校验）
 document.getElementById('saveBtn').addEventListener('click', () => {
     let baseUrl = document.getElementById('apiBaseUrl').value.trim();
+    if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
-    // 智能纠错：如果网址最后多打了一个斜杠，自动去掉
-    if (baseUrl.endsWith('/')) {
-        baseUrl = baseUrl.slice(0, -1);
-        document.getElementById('apiBaseUrl').value = baseUrl;
-    }
-
-    const config = {
+    chrome.storage.local.set({
         apiBaseUrl: baseUrl,
         modelName: document.getElementById('modelName').value.trim(),
         apiKey: document.getElementById('apiKey').value.trim(),
-        targetLang: document.getElementById('targetLang').value
-    };
-
-    if (!config.apiBaseUrl || !config.modelName) {
-        alert("请至少填写接口地址和模型名称！");
-        return;
-    }
-
-    chrome.storage.local.set(config, () => {
+        targetLang: document.getElementById('targetLang').value,
+        ocrApiKey: document.getElementById('ocrApiKey').value.trim()
+    }, () => {
         const status = document.getElementById('status');
         status.style.display = 'block';
         setTimeout(() => status.style.display = 'none', 2000);
     });
 });
 
-// 快速操作：抠图翻译
 document.getElementById('drawBtn').addEventListener('click', () => {
     chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
         const currentTab = tabs[0];
         if (currentTab.url.startsWith("chrome://") || currentTab.url.startsWith("edge://")) {
-            alert("⚠️ 插件无法在浏览器系统页面运行！请打开一个真实的网页。");
+            alert("⚠️ 插件无法在浏览器系统页面运行！");
             return;
         }
         chrome.tabs.sendMessage(currentTab.id, {action: "toggle_draw"}, () => {
-            if (chrome.runtime.lastError) {
-                alert("⚠️ 唤起失败！请先【刷新】一下当前网页（按 F5）。");
-            } else {
-                window.close();
-            }
+            if (!chrome.runtime.lastError) window.close();
         });
     });
 });
 
-// 快速操作：自定义快捷键
+// 恢复跳转快捷键设置页面
 document.getElementById('shortcutBtn').addEventListener('click', () => {
     chrome.tabs.create({url: "chrome://extensions/shortcuts"});
 });

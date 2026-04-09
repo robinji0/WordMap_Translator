@@ -15,27 +15,30 @@
         label { font-size: 13px; font-weight: bold; color: #333; }
         hr { border: 0; border-top: 1px solid #eee; margin: 15px 0; }
         .help-text { font-size: 11px; color: #666; background: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 10px;}
+        .link { color: #2196F3; text-decoration: none; }
     </style>
 </head>
 <body>
-<h3>⚙️ WordMap 通用 AI 设置</h3>
+<h3>⚙️ WordMap 通用设置</h3>
 
 <div class="help-text">
-    支持任何兼容 OpenAI 格式的 API。<br>
-    <b>Ollama 本地:</b> 地址填 http://localhost:11434/v1<br>
-    <b>Groq:</b> 地址填 https://api.groq.com/openai/v1
+    <b>免费 OCR 引擎支持：</b><br>
+    默认使用公共测试 Key，若报错频繁请 <a href="https://ocr.space/OCRAPI" target="_blank" class="link">点此免费申请专属 Key</a> (每月2.5万次)
 </div>
 
-<label>1. 接口地址 (Base URL):</label>
+<label>OCR.space API Key:</label>
+<input type="text" id="ocrApiKey" placeholder="留空则使用默认 helloworld">
+
+<label>大模型接口地址 (Base URL):</label>
 <input type="text" id="apiBaseUrl" placeholder="https://api.openai.com/v1">
 
-<label>2. 模型名称 (Model Name):</label>
+<label>大模型名称 (纯文本模型):</label>
 <input type="text" id="modelName" placeholder="例如: llama-3.3-70b-versatile">
 
-<label>3. API Key (本地 Ollama 可留空):</label>
+<label>大模型 API Key:</label>
 <input type="password" id="apiKey" placeholder="sk-...">
 
-<label>4. 翻译目标语言:</label>
+<label>翻译目标语言:</label>
 <select id="targetLang">
     <option value="Chinese">中文 (Chinese)</option>
     <option value="English">英文 (English)</option>
@@ -48,7 +51,7 @@
 <hr>
 
 <label>快速操作:</label>
-<button id="drawBtn" class="btn-draw">🖍️ 抠图翻译</button>
+<button id="drawBtn" class="btn-draw">🖍️ 立即抠图翻译</button>
 <button id="shortcutBtn" class="btn-shortcut">⌨️ 自定义快捷键</button>
 
 <script src="popup.js"></script>
