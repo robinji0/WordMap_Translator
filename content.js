@@ -267,12 +267,8 @@
 
     chrome.runtime.sendMessage({ action: 'capture_tab' }, (response) => {
       if (!response || response.error || !response.dataUrl) {
-        updateMobileLauncher();
-        showStatusCard({
-          title: WordMapI18n.t(currentUiLang, 'errorTitle'),
-          detail: WordMapI18n.t(currentUiLang, 'errorCaptureFailed'),
-          state: 'error'
-        }, lastX, lastY);
+        const rawError = String(response?.error || '');
+        handleCaptureFallback({ minX, minY, width, height, rawError });
         return;
       }
 
@@ -395,6 +391,217 @@
   function removeDrawHint() {
     const hint = document.getElementById('wordmap-draw-hint');
     if (hint) hint.remove();
+  }
+
+  function handleCaptureFallback({ minX, minY, width, height, rawError }) {
+    const bounds = {
+      left: minX,
+      top: minY,
+      right: minX + width,
+      bottom: minY + height,
+      width,
+      height
+    };
+
+    const extractedText = extractVisibleTextFromBounds(bounds);
+    if (extractedText) {
+      updateMobileLauncher();
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'statusTranslateTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'statusFallbackTextDetail'),
+        state: 'progress'
+      }, lastX, lastY);
+
+      chrome.runtime.sendMessage({
+        action: 'process_text',
+        text: extractedText
+      });
+      return;
+    }
+
+    const mediaImage = captureRenderableMediaFromBounds(bounds);
+    if (mediaImage) {
+      updateMobileLauncher();
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'statusFallbackMediaDetail'),
+        state: 'progress'
+      }, lastX, lastY);
+
+      chrome.runtime.sendMessage({
+        action: 'process_image',
+        imageBase64: mediaImage
+      });
+      return;
+    }
+
+    const detail = /no active web content to capture/i.test(String(rawError || ''))
+      ? `${WordMapI18n.t(currentUiLang, 'errorCaptureFallbackUnavailable')}\n${WordMapI18n.t(currentUiLang, 'errorCaptureNoActiveContent')}\n${rawError}`
+      : rawError
+        ? `${WordMapI18n.t(currentUiLang, 'errorCaptureFailed')}\n${rawError}`
+        : WordMapI18n.t(currentUiLang, 'errorCaptureFailed');
+
+    updateMobileLauncher();
+    showStatusCard({
+      title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+      detail,
+      state: 'error'
+    }, lastX, lastY);
+  }
+
+  function extractVisibleTextFromBounds(bounds) {
+    if (!document.body) return '';
+
+    const items = [];
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          const value = String(node.nodeValue || '').replace(/\s+/g, ' ').trim();
+          if (!value) return NodeFilter.FILTER_REJECT;
+          const parent = node.parentElement;
+          if (!parent || !isElementRenderable(parent)) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode;
+      const parent = textNode.parentElement;
+      if (!parent) continue;
+
+      const range = document.createRange();
+      range.selectNodeContents(textNode);
+      const rects = Array.from(range.getClientRects());
+      range.detach?.();
+
+      const intersecting = rects.find((rect) => rectIntersectsBounds(rect, bounds));
+      if (!intersecting) continue;
+
+      items.push({
+        text: String(textNode.nodeValue || '').replace(/\s+/g, ' ').trim(),
+        top: intersecting.top,
+        left: intersecting.left
+      });
+    }
+
+    if (!items.length) return '';
+
+    items.sort((a, b) => (a.top - b.top) || (a.left - b.left));
+
+    const lines = [];
+    let currentLineTop = null;
+    let currentLine = [];
+
+    items.forEach((item) => {
+      if (currentLineTop === null || Math.abs(item.top - currentLineTop) <= 14) {
+        currentLineTop = currentLineTop === null ? item.top : currentLineTop;
+        currentLine.push(item.text);
+        return;
+      }
+
+      lines.push(currentLine.join(' '));
+      currentLineTop = item.top;
+      currentLine = [item.text];
+    });
+
+    if (currentLine.length) lines.push(currentLine.join(' '));
+
+    return Array.from(new Set(lines.map((line) => line.trim()).filter(Boolean))).join('\n').trim();
+  }
+
+  function captureRenderableMediaFromBounds(bounds) {
+    const candidates = Array.from(document.querySelectorAll('video, canvas, img'))
+      .filter((element) => isElementRenderable(element) && rectIntersectsBounds(element.getBoundingClientRect(), bounds));
+
+    if (!candidates.length) return '';
+
+    const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const output = document.createElement('canvas');
+    output.width = Math.max(1, Math.round(bounds.width * scale));
+    output.height = Math.max(1, Math.round(bounds.height * scale));
+    const outputCtx = output.getContext('2d');
+    outputCtx.scale(scale, scale);
+
+    let drewAny = false;
+
+    candidates.forEach((element) => {
+      const rect = element.getBoundingClientRect();
+      const intersection = getIntersectionRect(rect, bounds);
+      if (!intersection) return;
+
+      const source = getElementSourceSize(element);
+      if (!source.width || !source.height || !rect.width || !rect.height) return;
+
+      const sx = (intersection.left - rect.left) * (source.width / rect.width);
+      const sy = (intersection.top - rect.top) * (source.height / rect.height);
+      const sw = intersection.width * (source.width / rect.width);
+      const sh = intersection.height * (source.height / rect.height);
+      const dx = intersection.left - bounds.left;
+      const dy = intersection.top - bounds.top;
+
+      try {
+        outputCtx.drawImage(element, sx, sy, sw, sh, dx, dy, intersection.width, intersection.height);
+        drewAny = true;
+      } catch (error) {}
+    });
+
+    if (!drewAny) return '';
+
+    try {
+      return output.toDataURL('image/jpeg', 0.96);
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function getElementSourceSize(element) {
+    if (element instanceof HTMLVideoElement) {
+      return { width: element.videoWidth, height: element.videoHeight };
+    }
+    if (element instanceof HTMLCanvasElement) {
+      return { width: element.width, height: element.height };
+    }
+    if (element instanceof HTMLImageElement) {
+      return { width: element.naturalWidth, height: element.naturalHeight };
+    }
+    return { width: 0, height: 0 };
+  }
+
+  function isElementRenderable(element) {
+    if (!element || !element.isConnected) return false;
+    const style = window.getComputedStyle(element);
+    if (!style || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function rectIntersectsBounds(rect, bounds) {
+    return rect.bottom > bounds.top
+      && rect.top < bounds.bottom
+      && rect.right > bounds.left
+      && rect.left < bounds.right;
+  }
+
+  function getIntersectionRect(rect, bounds) {
+    const left = Math.max(rect.left, bounds.left);
+    const top = Math.max(rect.top, bounds.top);
+    const right = Math.min(rect.right, bounds.right);
+    const bottom = Math.min(rect.bottom, bounds.bottom);
+
+    if (right <= left || bottom <= top) return null;
+    return {
+      left,
+      top,
+      right,
+      bottom,
+      width: right - left,
+      height: bottom - top
+    };
   }
 
   function hideDrawHint() {

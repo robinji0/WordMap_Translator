@@ -76,7 +76,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'capture_tab') {
-    chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 100 }, (dataUrl) => {
+    const captureWindowId = Number.isInteger(request.windowId)
+      ? request.windowId
+      : sender.tab?.windowId;
+
+    chrome.tabs.captureVisibleTab(captureWindowId, { format: 'jpeg', quality: 100 }, (dataUrl) => {
       if (chrome.runtime.lastError || !dataUrl) {
         sendResponse({ error: chrome.runtime.lastError ? chrome.runtime.lastError.message : 'capture_failed' });
         return;
@@ -150,6 +154,65 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             uiLang,
             data: jsonResult,
             ocrText: extractedText
+          });
+          sendResponse({ status: 'ok' });
+        } catch (error) {
+          const message = error && error.message
+            ? error.message
+            : WordMapI18n.t(uiLang, 'errorUnknown', { message: String(error) });
+          sendErrorStatus(tabId, uiLang, message);
+          sendResponse({ status: 'error', message });
+        }
+      }
+    );
+    return true;
+  }
+
+  if (request.action === 'process_text') {
+    chrome.storage.local.get(
+      ['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'uiLang'],
+      async (stored) => {
+        const uiLang = WordMapI18n.getEffectiveUiLang(stored.uiLang);
+        const tabId = sender.tab && sender.tab.id;
+
+        if (!tabId) {
+          sendResponse({ status: 'no_tab' });
+          return;
+        }
+
+        const apiBaseUrl = normalizeBaseUrl(stored.apiBaseUrl);
+        const modelName = String(stored.modelName || '').trim();
+        const apiKey = String(stored.apiKey || '').trim();
+        const targetLang = stored.targetLang || DEFAULT_SETTINGS.targetLang;
+        const sourceText = String(request.text || '').trim();
+
+        if (!apiBaseUrl || !modelName) {
+          sendErrorStatus(tabId, uiLang, WordMapI18n.t(uiLang, 'errorMissingConfig'));
+          sendResponse({ status: 'missing_config' });
+          return;
+        }
+
+        if (!sourceText) {
+          sendErrorStatus(tabId, uiLang, WordMapI18n.t(uiLang, 'errorNoText'));
+          sendResponse({ status: 'no_text' });
+          return;
+        }
+
+        try {
+          const jsonResult = await callUniversalLLM(
+            sourceText,
+            apiBaseUrl,
+            modelName,
+            apiKey,
+            targetLang,
+            uiLang
+          );
+
+          chrome.tabs.sendMessage(tabId, {
+            action: 'show_result',
+            uiLang,
+            data: jsonResult,
+            ocrText: sourceText
           });
           sendResponse({ status: 'ok' });
         } catch (error) {
