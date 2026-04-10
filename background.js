@@ -344,6 +344,10 @@ async function performOCR(base64Image, ocrApiKey, ocrSourceLang, uiLang) {
 
 async function callUniversalLLM(text, apiBaseUrl, modelName, apiKey, targetLang, uiLang) {
   const endpoint = resolveChatCompletionsEndpoint(apiBaseUrl);
+  if (providerRequiresApiKey(endpoint) && !String(apiKey || '').trim()) {
+    throw new Error(WordMapI18n.t(uiLang, 'errorApiKeyRequired'));
+  }
+
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
@@ -373,7 +377,12 @@ async function callUniversalLLM(text, apiBaseUrl, modelName, apiKey, targetLang,
       WordMapI18n.t(uiLang, 'errorAiRequestDetailed', {
         status: response.status,
         endpoint,
-        detail: extractProviderErrorMessage(rawText) || response.statusText || String(response.status)
+        detail: [
+          extractProviderErrorMessage(rawText) || response.statusText || String(response.status),
+          providerRequiresApiKey(endpoint)
+            ? (apiKey ? 'Authorization: Bearer sent' : 'Authorization: missing')
+            : ''
+        ].filter(Boolean).join('\n')
       })
     );
   }
@@ -484,4 +493,9 @@ function extractProviderErrorMessage(rawText) {
     // fall through
   }
   return WordMapI18n.clampTextPreview(text, 180);
+}
+
+function providerRequiresApiKey(endpoint) {
+  const url = String(endpoint || '').toLowerCase();
+  return /api\.groq\.com|api\.openai\.com|openrouter\.ai|together\.xyz|fireworks\.ai|deepseek\.com/.test(url);
 }
