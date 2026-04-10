@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "WordMap 圈选翻译",
-  "version": "1.3",
-  "description": "支持自由圈选与矩形框选，使用 OCR + AI 进行网页区域翻译。",
+  "name": "WordMap Screen Translator",
+  "version": "1.3.0",
+  "description": "Capture text on any page with freehand or rectangle selection, run OCR, and translate it with AI.",
   "permissions": [
     "storage",
     "activeTab",
@@ -20,6 +20,7 @@
   },
   "action": {
     "default_popup": "popup.html",
+    "default_title": "WordMap",
     "default_icon": {
       "16": "assets/icon16.png",
       "32": "assets/icon32.png",
@@ -49,14 +50,14 @@
         "default": "Alt+T",
         "mac": "Alt+T"
       },
-      "description": "开启/关闭自由圈选模式"
+      "description": "Start freehand capture"
     },
     "toggle-rect-mode": {
       "suggested_key": {
         "default": "Alt+R",
         "mac": "Alt+R"
       },
-      "description": "开启/关闭矩形框选模式"
+      "description": "Start rectangle capture"
     }
   }
 }

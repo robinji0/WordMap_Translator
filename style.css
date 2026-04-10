@@ -1,11 +1,12 @@
 .wordmap-drawing-mode {
   cursor: crosshair !important;
+  overscroll-behavior: contain;
 }
 
 #wordmap-result-card {
   position: fixed;
   z-index: 999999;
-  width: min(760px, calc(100vw - 24px));
+  width: min(760px, calc(100vw - 20px));
   max-width: 760px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.97);
@@ -51,6 +52,7 @@
 }
 
 .wordmap-card-brand-meta { min-width: 0; }
+
 .wordmap-card-title {
   font-size: 14px;
   line-height: 1.1;
@@ -65,29 +67,9 @@
   color: #64748b;
 }
 
-.wordmap-card-tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-}
-
-.wordmap-drag-pill {
-  max-width: 240px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.06);
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .wordmap-card-close {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border: none;
   border-radius: 10px;
   background: rgba(15, 23, 42, 0.06);
@@ -97,11 +79,12 @@
   line-height: 1;
   display: grid;
   place-items: center;
+  flex: none;
 }
 
 #wordmap-card-content {
   padding: 12px;
-  max-height: min(76vh, 620px);
+  max-height: min(74vh, 620px);
   overflow: auto;
 }
 
@@ -150,6 +133,7 @@
 }
 
 .wordmap-status-copy { min-width: 0; }
+
 .wordmap-status-title {
   font-size: 15px;
   font-weight: 800;
@@ -162,6 +146,7 @@
   font-size: 13px;
   line-height: 1.6;
   color: #475569;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
@@ -252,11 +237,11 @@
 
 #wordmap-draw-hint {
   position: fixed;
-  top: 18px;
+  top: 14px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 999999;
-  width: min(300px, calc(100vw - 24px));
+  width: min(340px, calc(100vw - 20px));
   border-radius: 16px;
   padding: 10px 12px;
   color: #ffffff;
@@ -264,6 +249,22 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 18px 36px rgba(15, 23, 42, 0.28);
   backdrop-filter: blur(12px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  opacity: 1;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+#wordmap-draw-hint.is-hiding {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-6px);
+  pointer-events: none;
+}
+
+.wordmap-draw-hint-copy {
+  min-width: 0;
 }
 
 .wordmap-draw-hint-badge {
@@ -293,9 +294,81 @@
   color: #cbd5e1;
 }
 
+.wordmap-draw-hint-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  flex: none;
+}
+
+#wordmap-mobile-launcher {
+  position: fixed;
+  z-index: 999997;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  touch-action: none;
+}
+
+.wordmap-mobile-launcher-main,
+.wordmap-mobile-launcher-mode {
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.22);
+}
+
+.wordmap-mobile-launcher-main {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+.wordmap-mobile-launcher-mode {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #475569;
+  display: grid;
+  place-items: center;
+}
+
+.wordmap-mobile-launcher-mode svg {
+  width: 18px;
+  height: 18px;
+}
+
+#wordmap-mobile-launcher-toast {
+  position: fixed;
+  z-index: 999998;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 24px);
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.9);
+  color: #ffffff;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.24);
+  backdrop-filter: blur(10px);
+}
+
 @media (max-width: 720px) {
   #wordmap-result-card {
-    width: calc(100vw - 20px);
+    width: calc(100vw - 18px);
   }
 
   .wordmap-result-grid {
@@ -303,16 +376,11 @@
   }
 
   .wordmap-card-header {
-    align-items: flex-start;
+    cursor: default;
   }
 
-  .wordmap-card-tools {
-    flex-direction: column;
-    align-items: flex-end;
-  }
-
-  .wordmap-drag-pill {
-    max-width: 160px;
+  #wordmap-card-content {
+    max-height: min(70vh, 560px);
   }
 }
 

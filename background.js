@@ -1,224 +1,424 @@
-try { importScripts('i18n.js'); } catch (error) {}
+importScripts('i18n.js');
+
+const DEFAULT_SETTINGS = {
+  uiLang: WordMapI18n.detectBrowserUiLang(),
+  sourceLang: 'eng',
+  targetLang: 'Chinese',
+  mobileQuickEnabled: true,
+  mobileQuickMode: 'rect'
+};
+
+let lastActiveWebTabId = null;
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.local.get(
+    ['uiLang', 'sourceLang', 'targetLang', 'mobileQuickEnabled', 'mobileQuickMode'],
+    (result) => {
+      const updates = {};
+      if (!result.uiLang) updates.uiLang = DEFAULT_SETTINGS.uiLang;
+      if (!result.sourceLang) updates.sourceLang = DEFAULT_SETTINGS.sourceLang;
+      if (!result.targetLang) updates.targetLang = DEFAULT_SETTINGS.targetLang;
+      if (typeof result.mobileQuickEnabled !== 'boolean') {
+        updates.mobileQuickEnabled = DEFAULT_SETTINGS.mobileQuickEnabled;
+      }
+      if (!result.mobileQuickMode) updates.mobileQuickMode = DEFAULT_SETTINGS.mobileQuickMode;
+      if (Object.keys(updates).length > 0) chrome.storage.local.set(updates);
+    }
+  );
+});
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  chrome.tabs.get(tabId, (tab) => {
+    if (chrome.runtime.lastError) return;
+    rememberTabIfWebPage(tab);
+  });
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!tab || !tab.active) return;
+  if (changeInfo.url || changeInfo.status === 'complete') rememberTabIfWebPage(tab);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabId === lastActiveWebTabId) lastActiveWebTabId = null;
+});
 
 chrome.commands.onCommand.addListener((command) => {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tab = tabs[0];
-    if (!tab) return;
-    if (command === 'toggle-draw-mode') smartToggleDraw(tab.id, 'pencil');
-    if (command === 'toggle-rect-mode') smartToggleDraw(tab.id, 'rect');
+    const activeTab = tabs && tabs[0];
+    if (activeTab) rememberTabIfWebPage(activeTab);
+
+    const mode = command === 'toggle-draw-mode'
+      ? 'pencil'
+      : command === 'toggle-rect-mode'
+        ? 'rect'
+        : '';
+
+    if (!mode) return;
+
+    resolveBestCaptureTab(null, (tabId) => {
+      if (tabId) smartToggleDraw(tabId, mode);
+    });
   });
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'popup_toggle_draw') {
-    if (request.tabId) {
-      smartToggleDraw(request.tabId, request.mode || 'pencil', request.uiLang);
-    } else {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) smartToggleDraw(tabs[0].id, request.mode || 'pencil', request.uiLang);
-      });
-    }
-    sendResponse({ status: 'ok' });
+    resolveBestCaptureTab(request.tabId, (tabId) => {
+      if (!tabId) {
+        sendResponse({ status: 'no_target_tab' });
+        return;
+      }
+      smartToggleDraw(tabId, request.mode || 'pencil');
+      sendResponse({ status: 'ok', tabId });
+    });
     return true;
   }
 
   if (request.action === 'capture_tab') {
     chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 100 }, (dataUrl) => {
-      sendResponse({ dataUrl, error: chrome.runtime.lastError?.message || '' });
+      if (chrome.runtime.lastError || !dataUrl) {
+        sendResponse({ error: chrome.runtime.lastError ? chrome.runtime.lastError.message : 'capture_failed' });
+        return;
+      }
+      sendResponse({ dataUrl });
     });
     return true;
   }
 
   if (request.action === 'process_image') {
-    chrome.storage.local.get(['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang', 'uiLang'], async (stored) => {
-      const tabId = sender.tab?.id;
-      if (!tabId) {
-        sendResponse({ status: 'error' });
-        return;
-      }
+    chrome.storage.local.get(
+      ['apiBaseUrl', 'modelName', 'apiKey', 'targetLang', 'ocrApiKey', 'sourceLang', 'uiLang'],
+      async (stored) => {
+        const uiLang = WordMapI18n.getEffectiveUiLang(stored.uiLang);
+        const tabId = sender.tab && sender.tab.id;
 
-      const uiLang = getUiLang(stored.uiLang);
-      const apiBaseUrl = (stored.apiBaseUrl || '').trim().replace(/\/$/, '');
-      const modelName = (stored.modelName || '').trim();
-      const apiKey = (stored.apiKey || '').trim();
-      const targetLang = stored.targetLang || 'Chinese';
-      const ocrApiKey = (stored.ocrApiKey || '').trim() || 'helloworld';
-      const sourceLang = stored.sourceLang || 'eng';
-
-      if (!apiBaseUrl || !modelName) {
-        sendTabMessage(tabId, {
-          action: 'show_error',
-          uiLang,
-          message: t(uiLang, 'errorMissingConfig')
-        });
-        sendResponse({ status: 'missing_config' });
-        return;
-      }
-
-      try {
-        sendTabMessage(tabId, {
-          action: 'show_status',
-          uiLang,
-          title: t(uiLang, 'statusOcrTitle'),
-          detail: t(uiLang, 'statusOcrDetail', {
-            engine: sourceLang,
-            engineLabel: getOcrLanguageLabel(sourceLang, uiLang)
-          }),
-          state: 'progress'
-        });
-
-        const extractedText = await performOCR(request.imageBase64, ocrApiKey, sourceLang, uiLang);
-        if (!String(extractedText || '').trim()) {
-          throw new Error(t(uiLang, 'errorNoText'));
+        if (!tabId) {
+          sendResponse({ status: 'no_tab' });
+          return;
         }
 
-        sendTabMessage(tabId, {
-          action: 'show_status',
-          uiLang,
-          title: t(uiLang, 'statusTranslateTitle'),
-          detail: t(uiLang, 'statusTranslateDetail', {
-            preview: clampTextPreview(extractedText, 72)
-          }),
-          state: 'progress'
-        });
+        const apiBaseUrl = normalizeBaseUrl(stored.apiBaseUrl);
+        const modelName = String(stored.modelName || '').trim();
+        const apiKey = String(stored.apiKey || '').trim();
+        const targetLang = stored.targetLang || DEFAULT_SETTINGS.targetLang;
+        const ocrApiKey = String(stored.ocrApiKey || '').trim() || 'helloworld';
 
-        const result = await callUniversalLLM(extractedText, apiBaseUrl, modelName, apiKey, targetLang, uiLang);
-        sendTabMessage(tabId, { action: 'show_result', uiLang, data: result, ocrText: extractedText });
-        sendResponse({ status: 'ok' });
-      } catch (error) {
-        sendTabMessage(tabId, {
-          action: 'show_error',
-          uiLang,
-          message: error.message || t(uiLang, 'errorUnknown', { message: 'unknown error' })
-        });
-        sendResponse({ status: 'error' });
+        // OCR source language must stay independent from the UI language.
+        const ocrSourceLang = stored.sourceLang || DEFAULT_SETTINGS.sourceLang;
+
+        if (!apiBaseUrl || !modelName) {
+          sendErrorStatus(tabId, uiLang, WordMapI18n.t(uiLang, 'errorMissingConfig'));
+          sendResponse({ status: 'missing_config' });
+          return;
+        }
+
+        try {
+          sendProgressStatus(tabId, uiLang, {
+            title: WordMapI18n.t(uiLang, 'statusOcrTitle'),
+            detail: WordMapI18n.t(uiLang, 'statusOcrDetail', {
+              engine: ocrSourceLang,
+              engineLabel: WordMapI18n.getOcrLanguageLabel(ocrSourceLang, uiLang)
+            })
+          });
+
+          const extractedText = await performOCR(request.imageBase64, ocrApiKey, ocrSourceLang, uiLang);
+          if (!extractedText) {
+            sendErrorStatus(tabId, uiLang, WordMapI18n.t(uiLang, 'errorNoText'));
+            sendResponse({ status: 'no_text' });
+            return;
+          }
+
+          sendProgressStatus(tabId, uiLang, {
+            title: WordMapI18n.t(uiLang, 'statusTranslateTitle'),
+            detail: WordMapI18n.t(uiLang, 'statusTranslateDetail', {
+              preview: WordMapI18n.clampTextPreview(extractedText, 48)
+            })
+          });
+
+          const jsonResult = await callUniversalLLM(
+            extractedText,
+            apiBaseUrl,
+            modelName,
+            apiKey,
+            targetLang,
+            uiLang
+          );
+
+          chrome.tabs.sendMessage(tabId, {
+            action: 'show_result',
+            uiLang,
+            data: jsonResult,
+            ocrText: extractedText
+          });
+          sendResponse({ status: 'ok' });
+        } catch (error) {
+          const message = error && error.message
+            ? error.message
+            : WordMapI18n.t(uiLang, 'errorUnknown', { message: String(error) });
+          sendErrorStatus(tabId, uiLang, message);
+          sendResponse({ status: 'error', message });
+        }
       }
-    });
+    );
     return true;
   }
 });
 
-function getUiLang(value) {
-  if (typeof WordMapI18n !== 'undefined') return WordMapI18n.getEffectiveUiLang(value);
-  return String(value || '').toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
+function rememberTabIfWebPage(tab) {
+  if (!tab || typeof tab.id !== 'number') return;
+  if (!isCapturableUrl(tab.url || '')) return;
+  lastActiveWebTabId = tab.id;
 }
 
-function t(uiLang, key, params) {
-  if (typeof WordMapI18n !== 'undefined') return WordMapI18n.t(uiLang, key, params);
-  return key;
+function isCapturableUrl(url) {
+  return !/^(chrome|edge|about|brave|vivaldi|opera|chrome-extension):\/\//i.test(String(url || ''));
 }
 
-function getOcrLanguageLabel(code, uiLang) {
-  if (typeof WordMapI18n !== 'undefined') return WordMapI18n.getOcrLanguageLabel(code, uiLang);
-  return code;
-}
+function resolveBestCaptureTab(preferredTabId, callback) {
+  if (typeof preferredTabId === 'number') {
+    chrome.tabs.get(preferredTabId, (tab) => {
+      if (!chrome.runtime.lastError && tab && isCapturableUrl(tab.url)) {
+        rememberTabIfWebPage(tab);
+        callback(tab.id);
+        return;
+      }
+      resolveBestCaptureTab(null, callback);
+    });
+    return;
+  }
 
-function clampTextPreview(text, maxLength) {
-  if (typeof WordMapI18n !== 'undefined') return WordMapI18n.clampTextPreview(text, maxLength);
-  return String(text || '').slice(0, maxLength || 60);
-}
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const activeTab = tabs && tabs[0];
+    if (activeTab && isCapturableUrl(activeTab.url)) {
+      rememberTabIfWebPage(activeTab);
+      callback(activeTab.id);
+      return;
+    }
 
-function sendTabMessage(tabId, payload) {
-  chrome.tabs.sendMessage(tabId, payload, () => void chrome.runtime.lastError);
-}
+    if (typeof lastActiveWebTabId === 'number') {
+      chrome.tabs.get(lastActiveWebTabId, (fallbackTab) => {
+        if (!chrome.runtime.lastError && fallbackTab && isCapturableUrl(fallbackTab.url)) {
+          callback(fallbackTab.id);
+          return;
+        }
+        callback(null);
+      });
+      return;
+    }
 
-function smartToggleDraw(tabId, mode, uiLang) {
-  chrome.tabs.sendMessage(tabId, { action: 'toggle_draw', mode, uiLang }, () => {
-    if (!chrome.runtime.lastError) return;
-    chrome.scripting.insertCSS({ target: { tabId }, files: ['style.css'] })
-      .then(() => chrome.scripting.executeScript({ target: { tabId }, files: ['i18n.js', 'content.js'] }))
-      .then(() => chrome.tabs.sendMessage(tabId, { action: 'toggle_draw', mode, uiLang }))
-      .catch((error) => console.error('Failed to inject content scripts.', error));
+    callback(null);
   });
 }
 
-async function performOCR(base64Image, ocrApiKey, sourceLang, uiLang) {
+function smartToggleDraw(tabId, mode) {
+  chrome.tabs.sendMessage(tabId, { action: 'toggle_draw', mode }, () => {
+    if (!chrome.runtime.lastError) return;
+
+    chrome.scripting
+      .insertCSS({ target: { tabId }, files: ['style.css'] })
+      .then(() => chrome.scripting.executeScript({ target: { tabId }, files: ['i18n.js', 'content.js'] }))
+      .then(() => chrome.tabs.sendMessage(tabId, { action: 'toggle_draw', mode }))
+      .catch((error) => console.error('WordMap injection failed:', error));
+  });
+}
+
+function sendProgressStatus(tabId, uiLang, payload) {
+  chrome.tabs.sendMessage(tabId, {
+    action: 'show_status',
+    uiLang,
+    state: 'progress',
+    title: payload.title,
+    detail: payload.detail
+  });
+}
+
+function sendErrorStatus(tabId, uiLang, detail) {
+  chrome.tabs.sendMessage(tabId, {
+    action: 'show_status',
+    uiLang,
+    state: 'error',
+    title: WordMapI18n.t(uiLang, 'errorTitle'),
+    detail
+  });
+}
+
+async function performOCR(base64Image, ocrApiKey, ocrSourceLang, uiLang) {
   const formData = new FormData();
   formData.append('base64image', base64Image);
-  formData.append('language', sourceLang);
+  formData.append('language', ocrSourceLang);
   formData.append('scale', 'true');
   formData.append('OCREngine', '1');
   formData.append('apikey', ocrApiKey);
 
-  const response = await fetch('https://api.ocr.space/parse/image', {
-    method: 'POST',
-    body: formData
-  });
-
-  const data = await response.json();
-  if (data.IsErroredOnProcessing) {
-    const rawMessage = Array.isArray(data.ErrorMessage) ? data.ErrorMessage.filter(Boolean).join('; ') : (data.ErrorMessage || 'Unknown OCR error');
-    throw new Error(t(uiLang, 'errorOcrEngine', { message: rawMessage }));
+  let response;
+  try {
+    response = await fetch('https://api.ocr.space/parse/image', { method: 'POST', body: formData });
+  } catch (error) {
+    throw new Error(WordMapI18n.t(uiLang, 'errorUnknown', { message: error.message || String(error) }));
   }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    throw new Error(WordMapI18n.t(uiLang, 'errorOcrEngine', { message: response.statusText || response.status }));
+  }
+
+  if (!response.ok || data.IsErroredOnProcessing) {
+    const rawMessage = Array.isArray(data.ErrorMessage)
+      ? data.ErrorMessage.filter(Boolean).join('; ')
+      : data.ErrorMessage || data.ErrorDetails || response.statusText || response.status;
+    throw new Error(WordMapI18n.t(uiLang, 'errorOcrEngine', { message: rawMessage }));
+  }
+
   if (Array.isArray(data.ParsedResults) && data.ParsedResults.length > 0) {
     return data.ParsedResults.map((item) => item.ParsedText || '').join('\n').trim();
   }
+
   return '';
 }
 
-function buildChatCompletionsEndpoint(apiBaseUrl) {
-  const normalized = String(apiBaseUrl || '').trim().replace(/\/$/, '');
-  if (/\/chat\/completions$/i.test(normalized)) return normalized;
-  if (/\/v\d+$/i.test(normalized) || /\/openai$/i.test(normalized)) return `${normalized}/chat/completions`;
-  return `${normalized}/chat/completions`;
-}
-
 async function callUniversalLLM(text, apiBaseUrl, modelName, apiKey, targetLang, uiLang) {
-  const endpoint = buildChatCompletionsEndpoint(apiBaseUrl);
+  const endpoint = resolveChatCompletionsEndpoint(apiBaseUrl);
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-
-  const systemPrompt = `You are a professional translator and reading assistant.
-Return ONLY valid raw JSON.
-Translate the user's text strictly into ${targetLang}.
-Every dst value and the full_translation field must be in ${targetLang}.
-Do not include markdown.
-Use this JSON schema exactly:
-{
-  "full_translation": "fluent translation in ${targetLang}",
-  "words": [
-    {"src": "source token", "dst": "translation or brief explanation in ${targetLang}"}
-  ]
-}`;
 
   const payload = {
     model: modelName,
     messages: [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: buildTranslationSystemPrompt(targetLang) },
       { role: 'user', content: text }
     ],
     temperature: 0.1
   };
 
-  const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(payload) });
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    throw new Error(WordMapI18n.t(uiLang, 'errorUnknown', { message: error.message || String(error) }));
+  }
+
+  const rawText = await response.text();
   if (!response.ok) {
-    let detail = '';
-    try {
-      detail = await response.text();
-    } catch (error) {}
-    const pieces = [t(uiLang, 'errorAiRequest', { status: response.status }), t(uiLang, 'errorEndpointDetail', { endpoint })];
-    if (detail) pieces.push(detail.slice(0, 260));
-    throw new Error(pieces.join('\n'));
+    throw new Error(
+      WordMapI18n.t(uiLang, 'errorAiRequestDetailed', {
+        status: response.status,
+        endpoint,
+        detail: extractProviderErrorMessage(rawText) || response.statusText || String(response.status)
+      })
+    );
   }
 
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content?.trim();
-  if (!content) {
-    throw new Error(t(uiLang, 'errorAiEmpty'));
+  let data;
+  try {
+    data = rawText ? JSON.parse(rawText) : null;
+  } catch (error) {
+    throw new Error(WordMapI18n.t(uiLang, 'errorAiEmpty'));
   }
 
-  let resultText = content
+  if (!data || !data.choices || !data.choices.length || !data.choices[0].message || !data.choices[0].message.content) {
+    throw new Error(WordMapI18n.t(uiLang, 'errorAiEmpty'));
+  }
+
+  const resultText = String(data.choices[0].message.content || '').trim();
+  try {
+    return parseJsonFromModelOutput(resultText);
+  } catch (error) {
+    throw new Error(`${WordMapI18n.t(uiLang, 'errorJsonParse')}\n${WordMapI18n.clampTextPreview(resultText, 220)}`);
+  }
+}
+
+function buildTranslationSystemPrompt(targetLang) {
+  return `You are a professional translation engine.
+Your task is to translate OCR text strictly into ${targetLang}.
+
+Rules:
+1. Output ONLY a raw JSON object. Do not use markdown.
+2. The value of "full_translation" must be a fluent translation written entirely in ${targetLang}.
+3. Every value in "words[].dst" must also be written in ${targetLang}.
+4. Preserve names, numbers, punctuation, and line-break meaning whenever possible.
+5. Do not omit meaningful source units. Cover all meaningful tokens, particles, or phrases in "words".
+6. If OCR is noisy, make the most likely conservative translation without inventing extra content.
+
+Return exactly this shape:
+{
+  "full_translation": "A natural full translation in ${targetLang}",
+  "words": [
+    { "src": "source token", "dst": "translation or short explanation in ${targetLang}" }
+  ]
+}`;
+}
+
+function parseJsonFromModelOutput(outputText) {
+  const stripped = stripMarkdownCodeFences(outputText).trim();
+  try {
+    return JSON.parse(stripped);
+  } catch (error) {
+    const extracted = extractFirstBalancedJsonObject(stripped);
+    if (!extracted) throw error;
+    return JSON.parse(extracted);
+  }
+}
+
+function stripMarkdownCodeFences(text) {
+  return String(text || '')
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
     .replace(/```$/i, '')
     .trim();
+}
 
-  const jsonMatch = resultText.match(/\{[\s\S]*\}$/);
-  if (jsonMatch) resultText = jsonMatch[0];
+function extractFirstBalancedJsonObject(text) {
+  const source = String(text || '');
+  const startIndex = source.indexOf('{');
+  if (startIndex === -1) return null;
 
-  try {
-    return JSON.parse(resultText);
-  } catch (error) {
-    throw new Error(`${t(uiLang, 'errorJsonParse')}\n${resultText.slice(0, 320)}`);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = startIndex; i < source.length; i += 1) {
+    const char = source[i];
+    if (escaped) { escaped = false; continue; }
+    if (char === '\\') { escaped = true; continue; }
+    if (char === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(startIndex, i + 1);
+    }
   }
+  return null;
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function resolveChatCompletionsEndpoint(value) {
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized) return '';
+  if (/\/chat\/completions$/i.test(normalized)) return normalized;
+  return `${normalized}/chat/completions`;
+}
+
+function extractProviderErrorMessage(rawText) {
+  const text = String(rawText || '').trim();
+  if (!text) return '';
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed.error === 'string') return parsed.error;
+    if (parsed.error && typeof parsed.error.message === 'string') return parsed.error.message;
+    if (typeof parsed.message === 'string') return parsed.message;
+  } catch (error) {
+    // fall through
+  }
+  return WordMapI18n.clampTextPreview(text, 180);
 }

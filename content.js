@@ -9,14 +9,17 @@
   let currentY = 0;
   let lastX = 24;
   let lastY = 24;
-  let currentTool = 'pencil';
+  let currentTool = 'rect';
   let currentUiLang = WordMapI18n.getEffectiveUiLang();
+  let activePointerId = null;
   let cardAutoCloseTimer = null;
+  let drawHintTimer = null;
+  let mobileQuickEnabled = true;
+  let mobileQuickMode = 'rect';
+  let mobileLauncherPosition = null;
+  let launcherToastTimer = null;
 
-  chrome.storage.local.get(['uiLang'], (stored) => {
-    currentUiLang = WordMapI18n.getEffectiveUiLang(stored.uiLang);
-    updateDynamicCopy();
-  });
+  loadSettings();
 
   if (window.wordmapEscListener) {
     document.removeEventListener('keydown', window.wordmapEscListener);
@@ -36,106 +39,159 @@
   window.wordmapStorageListener = handleStorageChange;
   chrome.storage.onChanged.addListener(window.wordmapStorageListener);
 
+  window.addEventListener('resize', handleViewportResize);
+
+  function loadSettings() {
+    chrome.storage.local.get(['uiLang', 'mobileQuickEnabled', 'mobileQuickMode', 'mobileLauncherPosition'], (stored) => {
+      currentUiLang = WordMapI18n.getEffectiveUiLang(stored.uiLang);
+      mobileQuickEnabled = stored.mobileQuickEnabled !== false;
+      mobileQuickMode = stored.mobileQuickMode || 'rect';
+      mobileLauncherPosition = stored.mobileLauncherPosition || null;
+      updateCardStaticCopy();
+      updateDrawHintCopy();
+      updateMobileLauncher();
+    });
+  }
+
   function handleStorageChange(changes, areaName) {
-    if (areaName === 'local' && changes.uiLang) {
-      currentUiLang = WordMapI18n.getEffectiveUiLang(changes.uiLang.newValue);
-      updateDynamicCopy();
-    }
+    if (areaName !== 'local') return;
+
+    if (changes.uiLang) currentUiLang = WordMapI18n.getEffectiveUiLang(changes.uiLang.newValue);
+    if (changes.mobileQuickEnabled) mobileQuickEnabled = changes.mobileQuickEnabled.newValue !== false;
+    if (changes.mobileQuickMode) mobileQuickMode = changes.mobileQuickMode.newValue || 'rect';
+    if (changes.mobileLauncherPosition) mobileLauncherPosition = changes.mobileLauncherPosition.newValue || null;
+
+    updateCardStaticCopy();
+    updateDrawHintCopy();
+    updateMobileLauncher();
   }
 
   function handleEscKeydown(event) {
     if (event.key !== 'Escape') return;
-    cleanupCanvas();
+    if (document.getElementById('wordmap-canvas')) cleanupCanvas({ restoreLauncher: true });
     removeCard();
   }
 
   function handleRuntimeMessage(request, sender, sendResponse) {
-    if (request.uiLang) {
-      currentUiLang = WordMapI18n.getEffectiveUiLang(request.uiLang);
-    }
+    if (request.uiLang) currentUiLang = WordMapI18n.getEffectiveUiLang(request.uiLang);
 
     if (request.action === 'toggle_draw') {
-      toggleDrawMode(request.mode || 'pencil');
+      toggleDrawMode(request.mode || 'rect');
       sendResponse({ status: 'ok' });
-      return true;
+    } else if (request.action === 'show_status') {
+      showStatusCard({ title: request.title, detail: request.detail, state: request.state || 'progress' }, lastX, lastY);
+    } else if (request.action === 'show_result') {
+      renderResult(request.data, lastX, lastY, request.ocrText || '');
     }
-
-    if (request.action === 'show_status') {
-      showStatusCard(request.title, request.detail, request.state || 'progress', lastX, lastY);
-      return true;
-    }
-
-    if (request.action === 'show_error') {
-      showStatusCard(WordMapI18n.t(currentUiLang, 'errorTitle'), request.message, 'error', lastX, lastY);
-      return true;
-    }
-
-    if (request.action === 'show_result') {
-      renderResult(request.data, request.ocrText || '', lastX, lastY);
-      return true;
-    }
-
     return true;
   }
 
   function toggleDrawMode(mode) {
     currentTool = mode;
-    if (canvas) {
-      cleanupCanvas();
+
+    if (document.getElementById('wordmap-canvas')) {
+      cleanupCanvas({ restoreLauncher: true });
       return;
     }
 
     removeCard();
+    hideMobileLauncher();
+
     canvas = document.createElement('canvas');
     canvas.id = 'wordmap-canvas';
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
-    Object.assign(canvas.style, {
-      position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh', zIndex: '999998', cursor: 'crosshair'
-    });
+    canvas.style.position = 'fixed';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100vw';
+    canvas.style.height = '100vh';
+    canvas.style.zIndex = '999998';
+    canvas.style.cursor = 'crosshair';
+    canvas.style.touchAction = 'none';
+
     ctx = canvas.getContext('2d');
-    setupCanvasAppearance();
+    initializeCanvasLook();
+
     document.body.appendChild(canvas);
+    document.documentElement.classList.add('wordmap-drawing-mode');
     document.body.classList.add('wordmap-drawing-mode');
+
     showDrawHint();
 
-    canvas.addEventListener('mousedown', startDrawing);
-    canvas.addEventListener('mousemove', draw);
-    canvas.addEventListener('mouseup', stopDrawing);
+    canvas.addEventListener('pointerdown', handlePointerDown);
+    canvas.addEventListener('pointermove', handlePointerMove);
+    canvas.addEventListener('pointerup', handlePointerUp);
+    canvas.addEventListener('pointercancel', handlePointerCancel);
   }
 
-  function setupCanvasAppearance() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  function initializeCanvasLook() {
     if (currentTool === 'rect') {
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.22)';
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.28)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-    } else {
-      ctx.strokeStyle = '#2563eb';
-      ctx.lineWidth = 3;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.setLineDash([]);
+      return;
     }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#2563eb';
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.setLineDash([]);
   }
 
-  function startDrawing(event) {
+  function handlePointerDown(event) {
+    if (activePointerId !== null) return;
+    activePointerId = event.pointerId;
+    hideDrawHint();
+    if (canvas.setPointerCapture) {
+      try { canvas.setPointerCapture(event.pointerId); } catch (error) { /* ignore */ }
+    }
+    startDrawingAt(event.clientX, event.clientY);
+    event.preventDefault();
+  }
+
+  function handlePointerMove(event) {
+    if (!isDrawing || event.pointerId !== activePointerId) return;
+    drawAt(event.clientX, event.clientY);
+    event.preventDefault();
+  }
+
+  function handlePointerUp(event) {
+    if (event.pointerId !== activePointerId) return;
+    finishDrawingAt(event.clientX, event.clientY);
+    activePointerId = null;
+    if (canvas && canvas.releasePointerCapture) {
+      try { canvas.releasePointerCapture(event.pointerId); } catch (error) { /* ignore */ }
+    }
+    event.preventDefault();
+  }
+
+  function handlePointerCancel(event) {
+    if (event.pointerId !== activePointerId) return;
+    activePointerId = null;
+    cleanupCanvas({ restoreLauncher: true });
+  }
+
+  function startDrawingAt(clientX, clientY) {
     isDrawing = true;
-    startX = event.clientX;
-    startY = event.clientY;
-    currentX = startX;
-    currentY = startY;
+    startX = clientX;
+    startY = clientY;
+    currentX = clientX;
+    currentY = clientY;
 
     if (currentTool === 'pencil') {
-      points = [{ x: startX, y: startY }];
+      points = [];
       ctx.beginPath();
-      ctx.moveTo(startX, startY);
+      ctx.moveTo(clientX, clientY);
+      points.push({ x: clientX, y: clientY });
     }
   }
 
-  function draw(event) {
-    if (!isDrawing) return;
-    currentX = event.clientX;
-    currentY = event.clientY;
+  function drawAt(clientX, clientY) {
+    currentX = clientX;
+    currentY = clientY;
 
     if (currentTool === 'pencil') {
       ctx.lineTo(currentX, currentY);
@@ -145,7 +201,7 @@
     }
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.22)';
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.28)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const rectX = Math.min(startX, currentX);
@@ -156,63 +212,67 @@
     ctx.clearRect(rectX, rectY, rectW, rectH);
     ctx.strokeStyle = '#7c3aed';
     ctx.lineWidth = 2;
-    ctx.setLineDash([7, 5]);
+    ctx.setLineDash([8, 6]);
     ctx.strokeRect(rectX, rectY, rectW, rectH);
   }
 
-  function stopDrawing(event) {
-    if (!isDrawing) return;
+  function finishDrawingAt(clientX, clientY) {
     isDrawing = false;
 
+    let minX;
+    let minY;
+    let width;
+    let height;
     const padding = 12;
-    let minX = 0, minY = 0, width = 0, height = 0;
 
     if (currentTool === 'pencil') {
       ctx.closePath();
       if (points.length < 5) {
-        cleanupCanvas();
+        cleanupCanvas({ restoreLauncher: true });
         return;
       }
-      const xs = points.map((p) => p.x);
-      const ys = points.map((p) => p.y);
-      const pMinX = Math.min(...xs);
-      const pMaxX = Math.max(...xs);
-      const pMinY = Math.min(...ys);
-      const pMaxY = Math.max(...ys);
-      minX = Math.max(0, pMinX - padding);
-      minY = Math.max(0, pMinY - padding);
-      width = Math.min(window.innerWidth - minX, (pMaxX - pMinX) + padding * 2);
-      height = Math.min(window.innerHeight - minY, (pMaxY - pMinY) + padding * 2);
+
+      const xs = points.map((point) => point.x);
+      const ys = points.map((point) => point.y);
+      minX = Math.max(0, Math.min(...xs) - padding);
+      minY = Math.max(0, Math.min(...ys) - padding);
+      width = Math.min(window.innerWidth - minX, Math.max(...xs) - Math.min(...xs) + padding * 2);
+      height = Math.min(window.innerHeight - minY, Math.max(...ys) - Math.min(...ys) + padding * 2);
     } else {
       const rMinX = Math.min(startX, currentX);
       const rMaxX = Math.max(startX, currentX);
       const rMinY = Math.min(startY, currentY);
       const rMaxY = Math.max(startY, currentY);
-      if ((rMaxX - rMinX) < 10 || (rMaxY - rMinY) < 10) {
-        cleanupCanvas();
+
+      if (rMaxX - rMinX < 10 || rMaxY - rMinY < 10) {
+        cleanupCanvas({ restoreLauncher: true });
         return;
       }
+
       minX = Math.max(0, rMinX - padding);
       minY = Math.max(0, rMinY - padding);
-      width = Math.min(window.innerWidth - minX, (rMaxX - rMinX) + padding * 2);
-      height = Math.min(window.innerHeight - minY, (rMaxY - rMinY) + padding * 2);
+      width = Math.min(window.innerWidth - minX, rMaxX - rMinX + padding * 2);
+      height = Math.min(window.innerHeight - minY, rMaxY - rMinY + padding * 2);
     }
 
-    lastX = Math.min(window.innerWidth - 40, event.clientX + 16);
-    lastY = Math.min(window.innerHeight - 40, event.clientY + 16);
+    lastX = clientX;
+    lastY = clientY;
 
-    cleanupCanvas();
-    showStatusCard(
-      WordMapI18n.t(currentUiLang, 'statusPreparingCaptureTitle'),
-      WordMapI18n.t(currentUiLang, 'statusPreparingCaptureDetail'),
-      'progress',
-      lastX,
-      lastY
-    );
+    cleanupCanvas({ restoreLauncher: false });
+    showStatusCard({
+      title: WordMapI18n.t(currentUiLang, 'statusPreparingCaptureTitle'),
+      detail: WordMapI18n.t(currentUiLang, 'statusPreparingCaptureDetail'),
+      state: 'progress'
+    }, lastX, lastY);
 
     chrome.runtime.sendMessage({ action: 'capture_tab' }, (response) => {
       if (!response || response.error || !response.dataUrl) {
-        showStatusCard(WordMapI18n.t(currentUiLang, 'errorTitle'), WordMapI18n.t(currentUiLang, 'errorCaptureFailed'), 'error', lastX, lastY);
+        updateMobileLauncher();
+        showStatusCard({
+          title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+          detail: WordMapI18n.t(currentUiLang, 'errorCaptureFailed'),
+          state: 'error'
+        }, lastX, lastY);
         return;
       }
 
@@ -220,10 +280,12 @@
       image.onload = () => {
         const scaleX = image.width / window.innerWidth;
         const scaleY = image.height / window.innerHeight;
+
         const cropCanvas = document.createElement('canvas');
         cropCanvas.width = Math.max(1, Math.round(width * scaleX));
         cropCanvas.height = Math.max(1, Math.round(height * scaleY));
         const cropCtx = cropCanvas.getContext('2d');
+
         cropCtx.drawImage(
           image,
           minX * scaleX,
@@ -236,29 +298,39 @@
           cropCanvas.height
         );
 
-        showStatusCard(
-          WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
-          WordMapI18n.t(currentUiLang, 'statusUploadingDetail'),
-          'progress',
-          lastX,
-          lastY
-        );
+        updateMobileLauncher();
 
-        chrome.runtime.sendMessage({ action: 'process_image', imageBase64: cropCanvas.toDataURL('image/jpeg') });
+        showStatusCard({
+          title: WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
+          detail: WordMapI18n.t(currentUiLang, 'statusUploadingDetail'),
+          state: 'progress'
+        }, lastX, lastY);
+
+        chrome.runtime.sendMessage({
+          action: 'process_image',
+          imageBase64: cropCanvas.toDataURL('image/jpeg')
+        });
       };
       image.src = response.dataUrl;
     });
   }
 
-  function cleanupCanvas() {
+  function cleanupCanvas({ restoreLauncher = true } = {}) {
+    clearDrawHintTimer();
     removeDrawHint();
+    document.documentElement.classList.remove('wordmap-drawing-mode');
     document.body.classList.remove('wordmap-drawing-mode');
+
     if (canvas) {
       canvas.remove();
       canvas = null;
     }
-    points = [];
+
     isDrawing = false;
+    points = [];
+    activePointerId = null;
+
+    if (restoreLauncher) updateMobileLauncher();
   }
 
   function showDrawHint() {
@@ -268,12 +340,56 @@
       hint.id = 'wordmap-draw-hint';
       document.body.appendChild(hint);
     }
+    hint.hidden = false;
+    hint.classList.remove('is-hiding');
+    updateDrawHintCopy();
+    clearDrawHintTimer();
+    drawHintTimer = window.setTimeout(hideDrawHint, 1200);
+  }
+
+  function updateDrawHintCopy() {
+    const hint = document.getElementById('wordmap-draw-hint');
+    if (!hint) return;
+
     const isRect = currentTool === 'rect';
-    hint.innerHTML = `
-      <div class="wordmap-draw-hint-badge">${isRect ? WordMapI18n.t(currentUiLang, 'drawModeBadgeRect') : WordMapI18n.t(currentUiLang, 'drawModeBadgeFreehand')}</div>
-      <div class="wordmap-draw-hint-title">${isRect ? WordMapI18n.t(currentUiLang, 'drawHintRectTitle') : WordMapI18n.t(currentUiLang, 'drawHintPencilTitle')}</div>
-      <div class="wordmap-draw-hint-desc">${isRect ? WordMapI18n.t(currentUiLang, 'drawHintRectDesc') : WordMapI18n.t(currentUiLang, 'drawHintPencilDesc')} ${WordMapI18n.t(currentUiLang, 'drawHintFooter')}</div>
-    `;
+    const title = isRect ? WordMapI18n.t(currentUiLang, 'drawHintRectTitle') : WordMapI18n.t(currentUiLang, 'drawHintPencilTitle');
+    const description = isRect ? WordMapI18n.t(currentUiLang, 'drawHintRectDesc') : WordMapI18n.t(currentUiLang, 'drawHintPencilDesc');
+    const badge = isRect ? WordMapI18n.t(currentUiLang, 'drawModeBadgeRect') : WordMapI18n.t(currentUiLang, 'drawModeBadgeFreehand');
+    const footer = isTouchEnvironment()
+      ? WordMapI18n.t(currentUiLang, 'drawHintFooterTouch')
+      : WordMapI18n.t(currentUiLang, 'drawHintFooterDesktop');
+
+    hint.innerHTML = '';
+
+    const copy = document.createElement('div');
+    copy.className = 'wordmap-draw-hint-copy';
+
+    const badgeElement = document.createElement('div');
+    badgeElement.className = 'wordmap-draw-hint-badge';
+    badgeElement.textContent = badge;
+
+    const titleElement = document.createElement('div');
+    titleElement.className = 'wordmap-draw-hint-title';
+    titleElement.textContent = title;
+
+    const descriptionElement = document.createElement('div');
+    descriptionElement.className = 'wordmap-draw-hint-desc';
+    descriptionElement.textContent = `${description} ${footer}`;
+
+    copy.appendChild(badgeElement);
+    copy.appendChild(titleElement);
+    copy.appendChild(descriptionElement);
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'wordmap-draw-hint-close';
+    closeButton.textContent = '×';
+    closeButton.setAttribute('aria-label', WordMapI18n.t(currentUiLang, 'drawHintCancel'));
+    closeButton.setAttribute('title', WordMapI18n.t(currentUiLang, 'drawHintCancel'));
+    closeButton.addEventListener('click', () => cleanupCanvas({ restoreLauncher: true }));
+
+    hint.appendChild(copy);
+    hint.appendChild(closeButton);
   }
 
   function removeDrawHint() {
@@ -281,9 +397,26 @@
     if (hint) hint.remove();
   }
 
+  function hideDrawHint() {
+    const hint = document.getElementById('wordmap-draw-hint');
+    if (!hint) return;
+    clearDrawHintTimer();
+    hint.classList.add('is-hiding');
+    window.setTimeout(() => {
+      if (hint.classList.contains('is-hiding')) hint.hidden = true;
+    }, 180);
+  }
+
+  function clearDrawHintTimer() {
+    if (!drawHintTimer) return;
+    window.clearTimeout(drawHintTimer);
+    drawHintTimer = null;
+  }
+
   function getOrCreateCard(x, y) {
     clearCardAutoCloseTimer();
     let card = document.getElementById('wordmap-result-card');
+
     if (!card) {
       card = document.createElement('div');
       card.id = 'wordmap-result-card';
@@ -296,125 +429,158 @@
               <div class="wordmap-card-subtitle" data-role="subtitle"></div>
             </div>
           </div>
-          <div class="wordmap-card-tools">
-            <div class="wordmap-drag-pill" data-role="drag-pill"></div>
-            <button class="wordmap-card-close" data-role="close" type="button">×</button>
-          </div>
+          <button class="wordmap-card-close" data-role="close" type="button">×</button>
         </div>
         <div id="wordmap-card-content"></div>
       `;
       document.body.appendChild(card);
-      installCardDrag(card, card.querySelector('.wordmap-card-header'));
+      installCardInteractions(card, card.querySelector('.wordmap-card-header'));
       card.querySelector('[data-role="close"]').addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
         removeCard();
       });
-      document.addEventListener('mousedown', handleOutsideClick, true);
     }
 
-    updateDynamicCopy();
+    updateCardStaticCopy();
     positionCard(card, x, y);
     return { card, content: document.getElementById('wordmap-card-content') };
   }
 
-  function installCardDrag(card, handle) {
+  function installCardInteractions(card, handle) {
     let dragging = false;
+    let pointerId = null;
     let startClientX = 0;
     let startClientY = 0;
     let startLeft = 0;
     let startTop = 0;
 
-    handle.addEventListener('mousedown', (event) => {
+    const onPointerDown = (event) => {
       if (event.target.closest('.wordmap-card-close')) return;
       dragging = true;
+      pointerId = event.pointerId;
       startClientX = event.clientX;
       startClientY = event.clientY;
       startLeft = card.offsetLeft;
       startTop = card.offsetTop;
+      handle.style.cursor = 'grabbing';
       event.preventDefault();
-    });
-
-    const onMove = (event) => {
-      if (!dragging) return;
-      const left = startLeft + (event.clientX - startClientX);
-      const top = startTop + (event.clientY - startClientY);
-      card.style.left = `${clamp(left, 12, window.innerWidth - card.offsetWidth - 12)}px`;
-      card.style.top = `${clamp(top, 12, window.innerHeight - card.offsetHeight - 12)}px`;
     };
 
-    const onUp = () => { dragging = false; };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+    const onPointerMove = (event) => {
+      if (!dragging || event.pointerId !== pointerId) return;
+      const nextLeft = startLeft + (event.clientX - startClientX);
+      const nextTop = startTop + (event.clientY - startClientY);
+      card.style.left = `${clamp(nextLeft, 10, window.innerWidth - card.offsetWidth - 10)}px`;
+      card.style.top = `${clamp(nextTop, 10, window.innerHeight - card.offsetHeight - 10)}px`;
+    };
+
+    const onPointerUp = () => {
+      dragging = false;
+      pointerId = null;
+      handle.style.cursor = isTouchEnvironment() ? 'default' : 'grab';
+    };
+
+    const onOutsidePointerDown = (event) => {
+      if (!card.contains(event.target)) removeCard();
+    };
+
+    handle.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerup', onPointerUp);
+    document.addEventListener('pointercancel', onPointerUp);
+    const outsideTimer = window.setTimeout(() => {
+      document.addEventListener('pointerdown', onOutsidePointerDown, true);
+    }, 80);
+
     card._cleanupFns = [
-      () => document.removeEventListener('mousemove', onMove),
-      () => document.removeEventListener('mouseup', onUp)
+      () => window.clearTimeout(outsideTimer),
+      () => handle.removeEventListener('pointerdown', onPointerDown),
+      () => document.removeEventListener('pointermove', onPointerMove),
+      () => document.removeEventListener('pointerup', onPointerUp),
+      () => document.removeEventListener('pointercancel', onPointerUp),
+      () => document.removeEventListener('pointerdown', onOutsidePointerDown, true)
     ];
   }
 
-  function handleOutsideClick(event) {
-    const card = document.getElementById('wordmap-result-card');
-    if (card && !card.contains(event.target)) removeCard();
-  }
-
-  function updateDynamicCopy() {
+  function updateCardStaticCopy() {
     const card = document.getElementById('wordmap-result-card');
     if (!card) return;
+
     const subtitle = card.querySelector('[data-role="subtitle"]');
-    const dragPill = card.querySelector('[data-role="drag-pill"]');
     const closeButton = card.querySelector('[data-role="close"]');
-    if (subtitle) subtitle.textContent = WordMapI18n.t(currentUiLang, 'cardBrandSubtitle');
-    if (dragPill) dragPill.textContent = WordMapI18n.t(currentUiLang, 'cardSubtitle');
+    if (subtitle) subtitle.textContent = WordMapI18n.t(currentUiLang, 'cardSubtitle');
     if (closeButton) {
-      const label = WordMapI18n.t(currentUiLang, 'closeButtonAria');
-      closeButton.setAttribute('aria-label', label);
-      closeButton.title = label;
+      closeButton.setAttribute('aria-label', WordMapI18n.t(currentUiLang, 'closeButtonAria'));
+      closeButton.setAttribute('title', WordMapI18n.t(currentUiLang, 'closeButtonAria'));
     }
   }
 
-  function positionCard(card, x, y) {
-    const width = Math.min(760, window.innerWidth - 24);
-    card.style.width = `${width}px`;
-    const left = x + width + 20 > window.innerWidth ? window.innerWidth - width - 12 : x;
-    card.style.left = `${clamp(left, 12, window.innerWidth - width - 12)}px`;
-    requestAnimationFrame(() => {
-      const height = card.offsetHeight || 320;
-      const top = y + height + 12 > window.innerHeight ? window.innerHeight - height - 12 : y;
-      card.style.top = `${clamp(top, 12, window.innerHeight - height - 12)}px`;
-    });
-  }
+  function showStatusCard(payload, x, y) {
+    const { card, content } = getOrCreateCard(x, y);
+    content.innerHTML = '';
 
-  function showStatusCard(title, detail, state, x, y) {
-    const { content } = getOrCreateCard(x, y);
-    content.innerHTML = `
-      <div class="wordmap-status ${state === 'error' ? 'wordmap-status--error' : ''}">
-        <div class="wordmap-status-visual">
-          ${state === 'error' ? '<div class="wordmap-status-error-icon">×</div>' : '<div class="wordmap-status-spinner"></div>'}
-        </div>
-        <div class="wordmap-status-copy">
-          <div class="wordmap-status-title">${escapeHtml(title)}</div>
-          <div class="wordmap-status-detail">${escapeHtml(detail || '')}</div>
-        </div>
-      </div>
-    `;
+    const status = document.createElement('div');
+    status.className = `wordmap-status${payload.state === 'error' ? ' wordmap-status--error' : ''}`;
 
-    if (state === 'error') {
-      clearCardAutoCloseTimer();
-      cardAutoCloseTimer = window.setTimeout(removeCard, 5000);
+    const icon = document.createElement('div');
+    icon.className = 'wordmap-status-visual';
+    if (payload.state === 'error') {
+      icon.classList.add('wordmap-status-error-icon');
+      icon.textContent = '✕';
+    } else {
+      const spinner = document.createElement('div');
+      spinner.className = 'wordmap-status-spinner';
+      icon.appendChild(spinner);
+    }
+
+    const copy = document.createElement('div');
+    copy.className = 'wordmap-status-copy';
+    const title = document.createElement('div');
+    title.className = 'wordmap-status-title';
+    title.textContent = payload.title;
+    copy.appendChild(title);
+
+    if (payload.detail) {
+      const detail = document.createElement('div');
+      detail.className = 'wordmap-status-detail';
+      detail.textContent = payload.detail;
+      copy.appendChild(detail);
+    }
+
+    status.appendChild(icon);
+    status.appendChild(copy);
+    content.appendChild(status);
+    positionCard(card, x, y);
+
+    if (payload.state === 'error') {
+      cardAutoCloseTimer = window.setTimeout(removeCard, 4200);
     }
   }
 
-  function renderResult(data, ocrText, x, y) {
-    const { content } = getOrCreateCard(x, y);
-    const fullTranslation = (data && typeof data === 'object') ? (data.full_translation || data.translation || '') : '';
-    const wordPairs = Array.isArray(data) ? data : ((data && Array.isArray(data.words)) ? data.words : []);
+  function renderResult(data, x, y, ocrText) {
+    const { card, content } = getOrCreateCard(x, y);
+    content.innerHTML = '';
 
-    if (!fullTranslation && wordPairs.length === 0) {
-      showStatusCard(WordMapI18n.t(currentUiLang, 'errorTitle'), WordMapI18n.t(currentUiLang, 'resultEmpty'), 'error', x, y);
+    let fullTranslation = '';
+    let wordPairs = [];
+
+    if (Array.isArray(data)) {
+      wordPairs = data;
+    } else if (data && typeof data === 'object') {
+      fullTranslation = data.full_translation || data.translation || '';
+      wordPairs = Array.isArray(data.words) ? data.words : [];
+    }
+
+    if (wordPairs.length === 0 && !fullTranslation) {
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'resultEmpty'),
+        state: 'error'
+      }, x, y);
       return;
     }
 
-    content.innerHTML = '';
     const grid = document.createElement('div');
     grid.className = 'wordmap-result-grid';
 
@@ -441,24 +607,30 @@
       section.classList.add('wordmap-section--full');
       const list = document.createElement('div');
       list.className = 'wordmap-words-container';
+
       wordPairs.forEach((pair) => {
         const chip = document.createElement('div');
         chip.className = 'word-pair';
+
         const src = document.createElement('div');
         src.className = 'word-en';
         src.textContent = pair.src || pair.en || pair.text || pair.original || '—';
+
         const dst = document.createElement('div');
         dst.className = 'word-zh';
         dst.textContent = pair.dst || pair.zh || pair.translation || pair.Chinese || WordMapI18n.t(currentUiLang, 'resultNoGloss');
+
         chip.appendChild(src);
         chip.appendChild(dst);
         list.appendChild(chip);
       });
+
       section.appendChild(list);
       grid.appendChild(section);
     }
 
     content.appendChild(grid);
+    positionCard(card, x, y);
   }
 
   function createSection(titleText) {
@@ -469,6 +641,29 @@
     title.textContent = titleText;
     section.appendChild(title);
     return section;
+  }
+
+  function positionCard(card, x, y) {
+    requestAnimationFrame(() => {
+      const margin = 12;
+      const cardWidth = card.offsetWidth || 420;
+      const cardHeight = card.offsetHeight || 240;
+
+      if (window.innerWidth <= 720) {
+        const left = Math.max(margin, (window.innerWidth - cardWidth) / 2);
+        const top = margin + 44;
+        card.style.left = `${left}px`;
+        card.style.top = `${Math.min(top, window.innerHeight - cardHeight - margin)}px`;
+        return;
+      }
+
+      const idealLeft = x + 18;
+      const idealTop = y + 18;
+      const maxLeft = window.innerWidth - cardWidth - margin;
+      const maxTop = window.innerHeight - cardHeight - margin;
+      card.style.left = `${clamp(idealLeft, margin, maxLeft)}px`;
+      card.style.top = `${clamp(idealTop, margin, maxTop)}px`;
+    });
   }
 
   function clearCardAutoCloseTimer() {
@@ -483,21 +678,204 @@
     const card = document.getElementById('wordmap-result-card');
     if (!card) return;
     if (Array.isArray(card._cleanupFns)) card._cleanupFns.forEach((fn) => fn());
-    document.removeEventListener('mousedown', handleOutsideClick, true);
     card.remove();
+  }
+
+  function updateMobileLauncher() {
+    if (!shouldShowMobileLauncher()) {
+      hideMobileLauncher();
+      return;
+    }
+
+    const launcher = getOrCreateMobileLauncher();
+    syncMobileLauncherCopy(launcher);
+    applyMobileLauncherPosition(launcher, mobileLauncherPosition);
+    launcher.hidden = false;
+  }
+
+  function shouldShowMobileLauncher() {
+    return isTouchEnvironment() && mobileQuickEnabled && !canvas;
+  }
+
+  function hideMobileLauncher() {
+    const launcher = document.getElementById('wordmap-mobile-launcher');
+    if (launcher) launcher.hidden = true;
+  }
+
+  function getOrCreateMobileLauncher() {
+    let launcher = document.getElementById('wordmap-mobile-launcher');
+    if (launcher) return launcher;
+
+    launcher = document.createElement('div');
+    launcher.id = 'wordmap-mobile-launcher';
+    launcher.innerHTML = `
+      <button class="wordmap-mobile-launcher-main" type="button" data-role="main">WM</button>
+      <button class="wordmap-mobile-launcher-mode" type="button" data-role="mode"></button>
+    `;
+    document.body.appendChild(launcher);
+
+    const mainButton = launcher.querySelector('[data-role="main"]');
+    const modeButton = launcher.querySelector('[data-role="mode"]');
+
+    let dragState = null;
+
+    mainButton.addEventListener('pointerdown', (event) => {
+      dragState = {
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startLeft: launcher.offsetLeft,
+        startTop: launcher.offsetTop,
+        moved: false
+      };
+      if (mainButton.setPointerCapture) {
+        try { mainButton.setPointerCapture(event.pointerId); } catch (error) { /* ignore */ }
+      }
+      event.preventDefault();
+    });
+
+    mainButton.addEventListener('pointermove', (event) => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      const dx = event.clientX - dragState.startClientX;
+      const dy = event.clientY - dragState.startClientY;
+
+      if (!dragState.moved && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+        dragState.moved = true;
+      }
+
+      if (!dragState.moved) return;
+
+      applyMobileLauncherPosition(launcher, {
+        left: dragState.startLeft + dx,
+        top: dragState.startTop + dy
+      });
+      event.preventDefault();
+    });
+
+    const finishDrag = (event) => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      if (dragState.moved) {
+        mobileLauncherPosition = {
+          left: launcher.offsetLeft,
+          top: launcher.offsetTop
+        };
+        chrome.storage.local.set({ mobileLauncherPosition });
+      } else {
+        launchFromMobileBubble(launcher);
+      }
+      dragState = null;
+      event.preventDefault();
+    };
+
+    mainButton.addEventListener('pointerup', finishDrag);
+    mainButton.addEventListener('pointercancel', () => { dragState = null; });
+
+    modeButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      mobileQuickMode = mobileQuickMode === 'rect' ? 'pencil' : 'rect';
+      chrome.storage.local.set({ mobileQuickMode });
+      syncMobileLauncherCopy(launcher);
+      showLauncherToast(
+        mobileQuickMode === 'rect'
+          ? WordMapI18n.t(currentUiLang, 'mobileLauncherSwitchedRect')
+          : WordMapI18n.t(currentUiLang, 'mobileLauncherSwitchedFreehand')
+      );
+    });
+
+    return launcher;
+  }
+
+  function syncMobileLauncherCopy(launcher) {
+    const modeButton = launcher.querySelector('[data-role="mode"]');
+    modeButton.innerHTML = getModeIconSvg(mobileQuickMode);
+    modeButton.setAttribute('aria-label', WordMapI18n.t(currentUiLang, 'mobileLauncherModeAria'));
+    modeButton.setAttribute('title',
+      mobileQuickMode === 'rect'
+        ? WordMapI18n.t(currentUiLang, 'mobileLauncherModeRect')
+        : WordMapI18n.t(currentUiLang, 'mobileLauncherModeFreehand')
+    );
+
+    const mainButton = launcher.querySelector('[data-role="main"]');
+    mainButton.setAttribute('aria-label', WordMapI18n.t(currentUiLang, 'mobileLauncherMainAria'));
+    mainButton.setAttribute('title', WordMapI18n.t(currentUiLang, 'mobileLauncherMainAria'));
+  }
+
+  function getModeIconSvg(mode) {
+    if (mode === 'pencil') {
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 20l3.2-.8 9.9-9.9a2.4 2.4 0 0 0-3.4-3.4L3.8 15.8 3 19z"></path>
+        <path d="M12.6 6.9l4.5 4.5"></path>
+      </svg>`;
+    }
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="4.5" y="6" width="15" height="12" rx="2.5"></rect>
+      <path d="M8 10h8"></path>
+      <path d="M8 14h5"></path>
+    </svg>`;
+  }
+
+  function applyMobileLauncherPosition(launcher, pos) {
+    const left = pos && Number.isFinite(pos.left) ? pos.left : window.innerWidth - 74;
+    const top = pos && Number.isFinite(pos.top) ? pos.top : window.innerHeight - 110;
+    launcher.style.left = `${clamp(left, 10, window.innerWidth - launcher.offsetWidth - 10)}px`;
+    launcher.style.top = `${clamp(top, 10, window.innerHeight - launcher.offsetHeight - 10)}px`;
+  }
+
+  function launchFromMobileBubble(launcher) {
+    chrome.storage.local.get(['apiBaseUrl', 'modelName'], (stored) => {
+      if (!String(stored.apiBaseUrl || '').trim() || !String(stored.modelName || '').trim()) {
+        const rect = launcher.getBoundingClientRect();
+        lastX = rect.left + rect.width / 2;
+        lastY = rect.top;
+        showStatusCard({
+          title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+          detail: WordMapI18n.t(currentUiLang, 'mobileLauncherSetupToast'),
+          state: 'error'
+        }, lastX, lastY);
+        return;
+      }
+
+      const rect = launcher.getBoundingClientRect();
+      lastX = rect.left + rect.width / 2;
+      lastY = rect.top;
+      toggleDrawMode(mobileQuickMode);
+    });
+  }
+
+  function showLauncherToast(message) {
+    let toast = document.getElementById('wordmap-mobile-launcher-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'wordmap-mobile-launcher-toast';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = message;
+    toast.hidden = false;
+    window.clearTimeout(launcherToastTimer);
+    launcherToastTimer = window.setTimeout(() => {
+      toast.hidden = true;
+    }, 1400);
+  }
+
+  function handleViewportResize() {
+    if (canvas) {
+      cleanupCanvas({ restoreLauncher: true });
+      return;
+    }
+    const launcher = document.getElementById('wordmap-mobile-launcher');
+    if (launcher && !launcher.hidden) {
+      applyMobileLauncherPosition(launcher, mobileLauncherPosition);
+    }
+  }
+
+  function isTouchEnvironment() {
+    return (
+      (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+      (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+    );
   }
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
-  }
-
-  function escapeHtml(value) {
-    return String(value || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;')
-      .replace(/\n/g, '<br>');
   }
 })();
