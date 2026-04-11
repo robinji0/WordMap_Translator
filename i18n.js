@@ -1,6 +1,7 @@
 (function (root) {
   const UI_LANG_ZH = 'zh-CN';
   const UI_LANG_EN = 'en';
+  const TARGET_LANG_SIMPLIFIED_CHINESE = 'Simplified Chinese';
 
   const dictionaries = {
     [UI_LANG_ZH]: {
@@ -76,17 +77,39 @@
       statusOcrDetail: 'OCR 语言：{engineLabel} ({engine})',
       statusTranslateTitle: '正在请求 AI 翻译',
       statusTranslateDetail: '已识别：{preview}',
-      statusFallbackTextDetail: '浏览器截图不可用，已直接提取网页文字并发送给 AI。',
-      statusFallbackMediaDetail: '浏览器截图不可用，已改用页面媒体区域直采并发送到 OCR。',
+      statusMobileFallbackTitle: '正在切换到手机兼容模式',
+      statusMobileFallbackDetail: '浏览器截图不可用，正在尝试网页内回退方案…',
+      statusMobileTextFallbackTitle: '已直接提取网页文字',
+      statusMobileTextFallbackDetail: '手机端已从选区中直接提取网页文字，正在跳过 OCR 直接翻译。',
+      statusMobileImageFallbackTitle: '已改为图片元素裁剪',
+      statusMobileImageFallbackDetail: '手机端正在直接裁剪选中的图片元素，再发送到 OCR。',
+
+      statusRouterWarmupTitle: '正在连接资源取图链路',
+      statusRouterWarmupDetail: '手机端会直接从页面真实资源重建选区图像。首次在当前页使用时可能会自动刷新一次。',
+      statusRouterReloadTitle: '正在刷新当前页以记录真实资源',
+      statusRouterReloadDetail: '刷新后会自动回到原位置，并继续开始框选。',
+      statusRouterCaptureTitle: '正在重建真实图片片段',
+      statusRouterCaptureDetail: '这次不走浏览器截图，而是直接从页面真实资源重建选区图像。',
+      statusRouterTextFallbackTitle: '已直接提取网页文字',
+      statusRouterTextFallbackDetail: '当前选区更像真实 DOM 文本，已跳过 OCR 直接翻译。',
+      errorRouterPrepare: '资源取图链路启动失败：{message}',
+      errorRouterNoPreview: '页面找到了候选资源，但当前路径还没能重建出可识别的选区图像。下面保留了本次候选预览，方便你判断实际命中了什么。',
+      resultSectionCapturePreview: '本次送 OCR 的图像',
+      resultSectionCaptureMeta: '取图链路',
+      resultSectionDiagnostics: '取图诊断',
+      diagnosticSelection: '选区',
+      diagnosticCandidate: '候选',
+      diagnosticPath: '路径',
+      diagnosticScore: '评分',
+      diagnosticReason: '判定',
+      diagnosticSource: '来源',
 
       errorTitle: '处理失败',
       errorMissingConfig: '请先填写并保存模型接口地址和模型名称。',
       errorNoText: '没有识别到清晰文字，请重新框选。',
       errorCaptureFailed: '截图失败，请刷新页面后重试。',
-      errorCaptureNoActiveContent: '当前手机浏览器没有提供可截图的活动网页内容。请切回普通网页后重试；如果仍然报错，通常是 Kiwi 对截图接口的限制。',
-      errorCaptureFallbackUnavailable: '当前手机浏览器不支持页面截图；我也没能从你圈选的区域直接提取出网页文字或本地媒体画面。',
+      errorCaptureFailedMobile: '手机端截图失败，且网页内回退方案没有拿到可识别内容。请尽量框选纯文字区或单张图片后再试。',
       errorOcrEngine: 'OCR 服务返回错误：{message}',
-      errorApiKeyRequired: '当前模型服务需要 API Key。请在插件设置里填写并保存模型 API Key。',
       errorAiRequestDetailed: 'AI 请求失败（状态码 {status}）。\n{detail}\n请求地址：{endpoint}',
       errorAiEmpty: 'AI 返回异常，没有拿到有效结果。',
       errorJsonParse: '模型返回的内容不是有效 JSON。',
@@ -181,17 +204,39 @@
       statusOcrDetail: 'OCR language: {engineLabel} ({engine})',
       statusTranslateTitle: 'Requesting AI translation',
       statusTranslateDetail: 'Recognized: {preview}',
-      statusFallbackTextDetail: 'Screenshot capture is unavailable, so visible page text was extracted directly and sent to AI.',
-      statusFallbackMediaDetail: 'Screenshot capture is unavailable, so the selected media region was captured locally and sent to OCR.',
+      statusMobileFallbackTitle: 'Switching to mobile-safe capture',
+      statusMobileFallbackDetail: 'Browser screenshot capture is unavailable, so WordMap is trying an in-page fallback…',
+      statusMobileTextFallbackTitle: 'Page text extracted directly',
+      statusMobileTextFallbackDetail: 'The selected page text was extracted directly on mobile, so OCR is skipped and AI translation is starting.',
+      statusMobileImageFallbackTitle: 'Switched to element crop',
+      statusMobileImageFallbackDetail: 'WordMap is cropping the selected image element directly, then sending it to OCR.',
+
+      statusRouterWarmupTitle: 'Connecting to the resource capture route',
+      statusRouterWarmupDetail: 'On mobile, WordMap rebuilds the crop from real page assets. The first run on a page may trigger one automatic reload.',
+      statusRouterReloadTitle: 'Reloading the page to record real assets',
+      statusRouterReloadDetail: 'After reload, WordMap returns to the same spot and resumes capture automatically.',
+      statusRouterCaptureTitle: 'Rebuilding the real image crop',
+      statusRouterCaptureDetail: 'This path does not rely on browser screenshots. It rebuilds the selected image from real page assets.',
+      statusRouterTextFallbackTitle: 'Page text was extracted directly',
+      statusRouterTextFallbackDetail: 'This area looks like real DOM text, so OCR is skipped and AI translation starts directly.',
+      errorRouterPrepare: 'The resource capture route could not start: {message}',
+      errorRouterNoPreview: 'The page exposed candidate assets, but the current path could not rebuild a readable crop yet. The candidate previews are kept below so you can see what was actually hit.',
+      resultSectionCapturePreview: 'Image sent to OCR',
+      resultSectionCaptureMeta: 'Capture route',
+      resultSectionDiagnostics: 'Capture diagnostics',
+      diagnosticSelection: 'Selection',
+      diagnosticCandidate: 'Candidate',
+      diagnosticPath: 'Path',
+      diagnosticScore: 'Score',
+      diagnosticReason: 'Decision',
+      diagnosticSource: 'Source',
 
       errorTitle: 'Something went wrong',
       errorMissingConfig: 'Please save the model base URL and model name first.',
       errorNoText: 'No clear text was detected. Please select the area again.',
       errorCaptureFailed: 'Screenshot capture failed. Refresh the page and try again.',
-      errorCaptureNoActiveContent: 'The mobile browser did not expose an active web page for capture. Switch back to a normal web page and try again. If it still fails, Kiwi is likely limiting the capture API.',
-      errorCaptureFallbackUnavailable: 'The mobile browser cannot capture this page, and no visible page text or locally capturable media was found inside your selection.',
+      errorCaptureFailedMobile: 'Mobile screenshot capture failed, and the in-page fallback could not recover useful text or an image. Try selecting plain text or a single image and run it again.',
       errorOcrEngine: 'The OCR service returned an error: {message}',
-      errorApiKeyRequired: 'This model provider requires an API key. Please save the model API key in the extension settings.',
       errorAiRequestDetailed: 'The AI request failed (status {status}).\n{detail}\nEndpoint: {endpoint}',
       errorAiEmpty: 'The AI response was empty or malformed.',
       errorJsonParse: 'The model response was not valid JSON.',
@@ -227,11 +272,11 @@
     { value: 'spa', label: { [UI_LANG_ZH]: '西班牙语 (Spanish)', [UI_LANG_EN]: 'Spanish' } },
     { value: 'ger', label: { [UI_LANG_ZH]: '德语 (German)', [UI_LANG_EN]: 'German' } },
     { value: 'rus', label: { [UI_LANG_ZH]: '俄语 (Russian)', [UI_LANG_EN]: 'Russian' } },
-    { value: 'chs', label: { [UI_LANG_ZH]: '中文 (Chinese)', [UI_LANG_EN]: 'Chinese' } }
+    { value: 'chs', label: { [UI_LANG_ZH]: '简体中文 (Chinese)', [UI_LANG_EN]: 'Chinese (Simplified)' } }
   ];
 
   const targetLanguageOptions = [
-    { value: 'Chinese', label: { [UI_LANG_ZH]: '中文', [UI_LANG_EN]: 'Chinese' } },
+    { value: TARGET_LANG_SIMPLIFIED_CHINESE, label: { [UI_LANG_ZH]: '简体中文', [UI_LANG_EN]: 'Simplified Chinese' } },
     { value: 'English', label: { [UI_LANG_ZH]: '英文', [UI_LANG_EN]: 'English' } },
     { value: 'Japanese', label: { [UI_LANG_ZH]: '日文', [UI_LANG_EN]: 'Japanese' } },
     { value: 'Korean', label: { [UI_LANG_ZH]: '韩文', [UI_LANG_EN]: 'Korean' } },
@@ -249,6 +294,13 @@
   function normalizeUiLang(value) {
     const raw = String(value || '').trim().toLowerCase();
     return raw.startsWith('zh') ? UI_LANG_ZH : UI_LANG_EN;
+  }
+
+  function normalizeTargetLang(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return TARGET_LANG_SIMPLIFIED_CHINESE;
+    if (/^chinese$/i.test(raw) || /^中文$/i.test(raw)) return TARGET_LANG_SIMPLIFIED_CHINESE;
+    return raw;
   }
 
   function detectBrowserUiLang() {
@@ -317,6 +369,12 @@
     return option ? option.label : code;
   }
 
+  function getTargetLanguageLabel(value, uiLang) {
+    const normalized = normalizeTargetLang(value);
+    const option = getTargetLanguageOptions(uiLang).find((item) => item.value === normalized);
+    return option ? option.label : normalized;
+  }
+
   function clampTextPreview(text, maxLength) {
     const normalized = String(text || '').replace(/\s+/g, ' ').trim();
     if (!normalized) return '';
@@ -327,7 +385,9 @@
   root.WordMapI18n = {
     UI_LANG_ZH,
     UI_LANG_EN,
+    TARGET_LANG_SIMPLIFIED_CHINESE,
     normalizeUiLang,
+    normalizeTargetLang,
     detectBrowserUiLang,
     getEffectiveUiLang,
     getUiLanguageOptions,
@@ -335,6 +395,7 @@
     getTargetLanguageOptions,
     getCaptureModeOptions,
     getOcrLanguageLabel,
+    getTargetLanguageLabel,
     clampTextPreview,
     t
   };

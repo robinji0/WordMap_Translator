@@ -13,11 +13,12 @@
   let currentUiLang = WordMapI18n.getEffectiveUiLang();
   let activePointerId = null;
   let cardAutoCloseTimer = null;
-  let drawHintTimer = null;
   let mobileQuickEnabled = true;
   let mobileQuickMode = 'rect';
   let mobileLauncherPosition = null;
   let launcherToastTimer = null;
+  let drawHintSeenDesktop = false;
+  let drawHintSeenTouch = false;
 
   loadSettings();
 
@@ -42,11 +43,13 @@
   window.addEventListener('resize', handleViewportResize);
 
   function loadSettings() {
-    chrome.storage.local.get(['uiLang', 'mobileQuickEnabled', 'mobileQuickMode', 'mobileLauncherPosition'], (stored) => {
+    chrome.storage.local.get(['uiLang', 'mobileQuickEnabled', 'mobileQuickMode', 'mobileLauncherPosition', 'drawHintSeenDesktop', 'drawHintSeenTouch'], (stored) => {
       currentUiLang = WordMapI18n.getEffectiveUiLang(stored.uiLang);
       mobileQuickEnabled = stored.mobileQuickEnabled !== false;
       mobileQuickMode = stored.mobileQuickMode || 'rect';
       mobileLauncherPosition = stored.mobileLauncherPosition || null;
+      drawHintSeenDesktop = stored.drawHintSeenDesktop === true;
+      drawHintSeenTouch = stored.drawHintSeenTouch === true;
       updateCardStaticCopy();
       updateDrawHintCopy();
       updateMobileLauncher();
@@ -60,6 +63,8 @@
     if (changes.mobileQuickEnabled) mobileQuickEnabled = changes.mobileQuickEnabled.newValue !== false;
     if (changes.mobileQuickMode) mobileQuickMode = changes.mobileQuickMode.newValue || 'rect';
     if (changes.mobileLauncherPosition) mobileLauncherPosition = changes.mobileLauncherPosition.newValue || null;
+    if (changes.drawHintSeenDesktop) drawHintSeenDesktop = changes.drawHintSeenDesktop.newValue === true;
+    if (changes.drawHintSeenTouch) drawHintSeenTouch = changes.drawHintSeenTouch.newValue === true;
 
     updateCardStaticCopy();
     updateDrawHintCopy();
@@ -117,7 +122,9 @@
     document.documentElement.classList.add('wordmap-drawing-mode');
     document.body.classList.add('wordmap-drawing-mode');
 
-    showDrawHint();
+    const shouldShowHint = shouldShowDrawHint();
+    if (isTouchEnvironment() && !shouldShowHint) ensureDrawCloseButton();
+    if (shouldShowHint) showDrawHint();
 
     canvas.addEventListener('pointerdown', handlePointerDown);
     canvas.addEventListener('pointermove', handlePointerMove);
@@ -144,7 +151,6 @@
   function handlePointerDown(event) {
     if (activePointerId !== null) return;
     activePointerId = event.pointerId;
-    hideDrawHint();
     if (canvas.setPointerCapture) {
       try { canvas.setPointerCapture(event.pointerId); } catch (error) { /* ignore */ }
     }
@@ -265,55 +271,364 @@
       state: 'progress'
     }, lastX, lastY);
 
+    const selectionBounds = { left: minX, top: minY, width, height };
+
     chrome.runtime.sendMessage({ action: 'capture_tab' }, (response) => {
       if (!response || response.error || !response.dataUrl) {
-        const rawError = String(response?.error || '');
-        handleCaptureFallback({ minX, minY, width, height, rawError });
+        if (isTouchEnvironment()) {
+          runMobileCaptureFallback(selectionBounds).catch(() => {
+            updateMobileLauncher();
+            showStatusCard({
+              title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+              detail: WordMapI18n.t(currentUiLang, 'errorCaptureFailedMobile'),
+              state: 'error'
+            }, lastX, lastY);
+          });
+          return;
+        }
+
+        updateMobileLauncher();
+        showStatusCard({
+          title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+          detail: WordMapI18n.t(currentUiLang, 'errorCaptureFailed'),
+          state: 'error'
+        }, lastX, lastY);
         return;
       }
 
+      processCapturedDataUrl(response.dataUrl, selectionBounds);
+    });
+  }
+
+  function processCapturedDataUrl(dataUrl, selectionBounds) {
+    const image = new Image();
+    image.onload = () => {
+      const scaleX = image.width / window.innerWidth;
+      const scaleY = image.height / window.innerHeight;
+
+      const cropCanvas = document.createElement('canvas');
+      cropCanvas.width = Math.max(1, Math.round(selectionBounds.width * scaleX));
+      cropCanvas.height = Math.max(1, Math.round(selectionBounds.height * scaleY));
+      const cropCtx = cropCanvas.getContext('2d');
+
+      cropCtx.drawImage(
+        image,
+        selectionBounds.left * scaleX,
+        selectionBounds.top * scaleY,
+        selectionBounds.width * scaleX,
+        selectionBounds.height * scaleY,
+        0,
+        0,
+        cropCanvas.width,
+        cropCanvas.height
+      );
+
+      updateMobileLauncher();
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'statusUploadingDetail'),
+        state: 'progress'
+      }, lastX, lastY);
+
+      chrome.runtime.sendMessage({
+        action: 'process_image',
+        imageBase64: cropCanvas.toDataURL('image/jpeg', 0.96)
+      });
+    };
+    image.src = dataUrl;
+  }
+
+  async function runMobileCaptureFallback(selectionBounds) {
+    showStatusCard({
+      title: WordMapI18n.t(currentUiLang, 'statusMobileFallbackTitle'),
+      detail: WordMapI18n.t(currentUiLang, 'statusMobileFallbackDetail'),
+      state: 'progress'
+    }, lastX, lastY);
+
+    const fallbackResult = await captureSelectionFallback(selectionBounds);
+    if (!fallbackResult) throw new Error('mobile_fallback_failed');
+
+    updateMobileLauncher();
+
+    if (fallbackResult.kind === 'text') {
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'statusMobileTextFallbackTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'statusMobileTextFallbackDetail'),
+        state: 'progress'
+      }, lastX, lastY);
+      chrome.runtime.sendMessage({ action: 'process_text', text: fallbackResult.text });
+      return;
+    }
+
+    showStatusCard({
+      title: WordMapI18n.t(currentUiLang, 'statusMobileImageFallbackTitle'),
+      detail: WordMapI18n.t(currentUiLang, 'statusMobileImageFallbackDetail'),
+      state: 'progress'
+    }, lastX, lastY);
+    chrome.runtime.sendMessage({ action: 'process_image', imageBase64: fallbackResult.dataUrl });
+  }
+
+  async function captureSelectionFallback(selectionBounds) {
+    const visualCandidate = getBestVisualCandidate(selectionBounds);
+    if (visualCandidate && visualCandidate.score > 0.55) {
+      const dataUrl = await captureVisualCandidate(visualCandidate.element, selectionBounds);
+      if (dataUrl) return { kind: 'image', dataUrl };
+    }
+
+    const extractedText = extractTextFromSelection(selectionBounds);
+    if (extractedText && extractedText.length >= 6) {
+      return { kind: 'text', text: extractedText };
+    }
+
+    if (visualCandidate) {
+      const dataUrl = await captureVisualCandidate(visualCandidate.element, selectionBounds);
+      if (dataUrl) return { kind: 'image', dataUrl };
+    }
+
+    if (extractedText) {
+      return { kind: 'text', text: extractedText };
+    }
+
+    return null;
+  }
+
+  function extractTextFromSelection(selectionBounds) {
+    if (!document.body) return '';
+    const selectionRect = toSelectionRect(selectionBounds);
+    const ignoredTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION']);
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const text = String(node.nodeValue || '').replace(/\s+/g, ' ').trim();
+        if (!text) return NodeFilter.FILTER_REJECT;
+        const parent = node.parentElement;
+        if (!parent || ignoredTags.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+        const style = window.getComputedStyle(parent);
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    const collected = [];
+    let currentNode;
+    while ((currentNode = walker.nextNode())) {
+      const range = document.createRange();
+      range.selectNodeContents(currentNode);
+      const rects = Array.from(range.getClientRects());
+      const hasOverlap = rects.some((rect) => computeIntersectionArea(rect, selectionRect) > 18);
+      if (hasOverlap) {
+        const text = String(currentNode.nodeValue || '').replace(/\s+/g, ' ').trim();
+        if (text) collected.push(text);
+      }
+      if (typeof range.detach === 'function') range.detach();
+    }
+    return normalizeExtractedText(collected.join('\n'));
+  }
+
+  function normalizeExtractedText(text) {
+    return String(text || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+  }
+
+  function getBestVisualCandidate(selectionBounds) {
+    const selectionRect = toSelectionRect(selectionBounds);
+    const candidates = [];
+    const seen = new Set();
+    const centerX = selectionBounds.left + (selectionBounds.width / 2);
+    const centerY = selectionBounds.top + (selectionBounds.height / 2);
+
+    const centerElements = document.elementsFromPoint(centerX, centerY) || [];
+    centerElements.forEach((element) => {
+      const candidate = resolveVisualCandidateElement(element);
+      if (candidate && !seen.has(candidate)) {
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    });
+
+    document.querySelectorAll('img, canvas, svg, video').forEach((element) => {
+      if (seen.has(element)) return;
+      const rect = element.getBoundingClientRect();
+      if (computeIntersectionArea(rect, selectionRect) > 0) {
+        seen.add(element);
+        candidates.push(element);
+      }
+    });
+
+    let best = null;
+    candidates.forEach((element) => {
+      const rect = element.getBoundingClientRect();
+      if (!isElementVisibleForCapture(element, rect)) return;
+      const intersection = computeIntersectionArea(rect, selectionRect);
+      if (intersection <= 0) return;
+      const score = intersection / Math.max(1, selectionRect.width * selectionRect.height);
+      if (!best || score > best.score) {
+        best = { element, score };
+      }
+    });
+
+    return best;
+  }
+
+  function resolveVisualCandidateElement(element) {
+    if (!element) return null;
+    const tagName = String(element.tagName || '').toUpperCase();
+    if (tagName === 'IMG' || tagName === 'CANVAS' || tagName === 'SVG' || tagName === 'VIDEO') return element;
+    return element.closest ? element.closest('img, canvas, svg, video') : null;
+  }
+
+  function isElementVisibleForCapture(element, rect) {
+    if (!element || !rect || rect.width < 8 || rect.height < 8) return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) return false;
+    return true;
+  }
+
+  async function captureVisualCandidate(element, selectionBounds) {
+    if (!element) return null;
+    const tagName = String(element.tagName || '').toUpperCase();
+    try {
+      if (tagName === 'IMG') return await captureImgElement(element, selectionBounds);
+      if (tagName === 'CANVAS') return captureCanvasElement(element, selectionBounds);
+      if (tagName === 'SVG') return await captureSvgElement(element, selectionBounds);
+      if (tagName === 'VIDEO') return captureVideoElement(element, selectionBounds);
+    } catch (error) {
+      return null;
+    }
+    return null;
+  }
+
+  async function captureImgElement(imgElement, selectionBounds) {
+    const rect = imgElement.getBoundingClientRect();
+    const direct = attemptCropFromDrawable(
+      imgElement,
+      rect,
+      imgElement.naturalWidth || imgElement.width,
+      imgElement.naturalHeight || imgElement.height,
+      selectionBounds
+    );
+    if (direct) return direct;
+
+    const src = imgElement.currentSrc || imgElement.src;
+    if (!src) return null;
+
+    const fetchedDataUrl = await fetchImageAsDataUrl(src);
+    if (!fetchedDataUrl) return null;
+    const image = await loadImageFromUrl(fetchedDataUrl);
+    return attemptCropFromDrawable(
+      image,
+      rect,
+      image.naturalWidth || image.width,
+      image.naturalHeight || image.height,
+      selectionBounds
+    );
+  }
+
+  function captureCanvasElement(canvasElement, selectionBounds) {
+    const rect = canvasElement.getBoundingClientRect();
+    return attemptCropFromDrawable(canvasElement, rect, canvasElement.width, canvasElement.height, selectionBounds);
+  }
+
+  async function captureSvgElement(svgElement, selectionBounds) {
+    const rect = svgElement.getBoundingClientRect();
+    const serialized = new XMLSerializer().serializeToString(svgElement);
+    const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(serialized)}`;
+    const image = await loadImageFromUrl(dataUrl);
+    return attemptCropFromDrawable(
+      image,
+      rect,
+      image.naturalWidth || image.width,
+      image.naturalHeight || image.height,
+      selectionBounds
+    );
+  }
+
+  function captureVideoElement(videoElement, selectionBounds) {
+    const rect = videoElement.getBoundingClientRect();
+    return attemptCropFromDrawable(videoElement, rect, videoElement.videoWidth, videoElement.videoHeight, selectionBounds);
+  }
+
+  function attemptCropFromDrawable(drawable, rect, sourceWidth, sourceHeight, selectionBounds) {
+    if (!drawable || !rect || !sourceWidth || !sourceHeight || rect.width <= 0 || rect.height <= 0) return null;
+    const selectionRect = toSelectionRect(selectionBounds);
+    const clipLeft = Math.max(selectionRect.left, rect.left);
+    const clipTop = Math.max(selectionRect.top, rect.top);
+    const clipRight = Math.min(selectionRect.right, rect.right);
+    const clipBottom = Math.min(selectionRect.bottom, rect.bottom);
+    const clipWidth = clipRight - clipLeft;
+    const clipHeight = clipBottom - clipTop;
+    if (clipWidth <= 0 || clipHeight <= 0) return null;
+
+    const scaleX = sourceWidth / rect.width;
+    const scaleY = sourceHeight / rect.height;
+    const sx = Math.max(0, Math.round((clipLeft - rect.left) * scaleX));
+    const sy = Math.max(0, Math.round((clipTop - rect.top) * scaleY));
+    const sw = Math.max(1, Math.round(clipWidth * scaleX));
+    const sh = Math.max(1, Math.round(clipHeight * scaleY));
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = Math.max(1, Math.round(clipWidth * scaleX));
+    outCanvas.height = Math.max(1, Math.round(clipHeight * scaleY));
+    const outCtx = outCanvas.getContext('2d');
+    outCtx.drawImage(drawable, sx, sy, sw, sh, 0, 0, outCanvas.width, outCanvas.height);
+    return outCanvas.toDataURL('image/jpeg', 0.96);
+  }
+
+  function toSelectionRect(selectionBounds) {
+    return {
+      left: selectionBounds.left,
+      top: selectionBounds.top,
+      right: selectionBounds.left + selectionBounds.width,
+      bottom: selectionBounds.top + selectionBounds.height,
+      width: selectionBounds.width,
+      height: selectionBounds.height
+    };
+  }
+
+  function computeIntersectionArea(a, b) {
+    const left = Math.max(a.left, b.left);
+    const top = Math.max(a.top, b.top);
+    const right = Math.min(a.right, b.right);
+    const bottom = Math.min(a.bottom, b.bottom);
+    const width = right - left;
+    const height = bottom - top;
+    if (width <= 0 || height <= 0) return 0;
+    return width * height;
+  }
+
+  function loadImageFromUrl(url) {
+    return new Promise((resolve, reject) => {
       const image = new Image();
-      image.onload = () => {
-        const scaleX = image.width / window.innerWidth;
-        const scaleY = image.height / window.innerHeight;
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('image_load_failed'));
+      image.src = url;
+    });
+  }
 
-        const cropCanvas = document.createElement('canvas');
-        cropCanvas.width = Math.max(1, Math.round(width * scaleX));
-        cropCanvas.height = Math.max(1, Math.round(height * scaleY));
-        const cropCtx = cropCanvas.getContext('2d');
-
-        cropCtx.drawImage(
-          image,
-          minX * scaleX,
-          minY * scaleY,
-          width * scaleX,
-          height * scaleY,
-          0,
-          0,
-          cropCanvas.width,
-          cropCanvas.height
-        );
-
-        updateMobileLauncher();
-
-        showStatusCard({
-          title: WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
-          detail: WordMapI18n.t(currentUiLang, 'statusUploadingDetail'),
-          state: 'progress'
-        }, lastX, lastY);
-
-        chrome.runtime.sendMessage({
-          action: 'process_image',
-          imageBase64: cropCanvas.toDataURL('image/jpeg')
-        });
-      };
-      image.src = response.dataUrl;
+  function fetchImageAsDataUrl(url) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ action: 'fetch_image_as_data_url', url }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+          return;
+        }
+        if (!response || response.error || !response.dataUrl) {
+          reject(new Error(response && response.error ? response.error : 'image_fetch_failed'));
+          return;
+        }
+        resolve(response.dataUrl);
+      });
     });
   }
 
   function cleanupCanvas({ restoreLauncher = true } = {}) {
-    clearDrawHintTimer();
     removeDrawHint();
+    removeDrawCloseButton();
     document.documentElement.classList.remove('wordmap-drawing-mode');
     document.body.classList.remove('wordmap-drawing-mode');
 
@@ -329,18 +644,51 @@
     if (restoreLauncher) updateMobileLauncher();
   }
 
+  function shouldShowDrawHint() {
+    return isTouchEnvironment() ? !drawHintSeenTouch : !drawHintSeenDesktop;
+  }
+
+  function markDrawHintSeen() {
+    const key = isTouchEnvironment() ? 'drawHintSeenTouch' : 'drawHintSeenDesktop';
+    if (key === 'drawHintSeenTouch') {
+      if (drawHintSeenTouch) return;
+      drawHintSeenTouch = true;
+    } else {
+      if (drawHintSeenDesktop) return;
+      drawHintSeenDesktop = true;
+    }
+    chrome.storage.local.set({ [key]: true });
+  }
+
+  function ensureDrawCloseButton() {
+    if (!isTouchEnvironment()) return;
+    let closeButton = document.getElementById('wordmap-draw-close');
+    if (!closeButton) {
+      closeButton = document.createElement('button');
+      closeButton.id = 'wordmap-draw-close';
+      closeButton.type = 'button';
+      closeButton.textContent = '×';
+      closeButton.addEventListener('click', () => cleanupCanvas({ restoreLauncher: true }));
+      document.body.appendChild(closeButton);
+    }
+    closeButton.setAttribute('aria-label', WordMapI18n.t(currentUiLang, 'drawHintCancel'));
+    closeButton.setAttribute('title', WordMapI18n.t(currentUiLang, 'drawHintCancel'));
+  }
+
+  function removeDrawCloseButton() {
+    const closeButton = document.getElementById('wordmap-draw-close');
+    if (closeButton) closeButton.remove();
+  }
+
   function showDrawHint() {
+    markDrawHintSeen();
     let hint = document.getElementById('wordmap-draw-hint');
     if (!hint) {
       hint = document.createElement('div');
       hint.id = 'wordmap-draw-hint';
       document.body.appendChild(hint);
     }
-    hint.hidden = false;
-    hint.classList.remove('is-hiding');
     updateDrawHintCopy();
-    clearDrawHintTimer();
-    drawHintTimer = window.setTimeout(hideDrawHint, 1200);
   }
 
   function updateDrawHintCopy() {
@@ -391,233 +739,6 @@
   function removeDrawHint() {
     const hint = document.getElementById('wordmap-draw-hint');
     if (hint) hint.remove();
-  }
-
-  function handleCaptureFallback({ minX, minY, width, height, rawError }) {
-    const bounds = {
-      left: minX,
-      top: minY,
-      right: minX + width,
-      bottom: minY + height,
-      width,
-      height
-    };
-
-    const extractedText = extractVisibleTextFromBounds(bounds);
-    if (extractedText) {
-      updateMobileLauncher();
-      showStatusCard({
-        title: WordMapI18n.t(currentUiLang, 'statusTranslateTitle'),
-        detail: WordMapI18n.t(currentUiLang, 'statusFallbackTextDetail'),
-        state: 'progress'
-      }, lastX, lastY);
-
-      chrome.runtime.sendMessage({
-        action: 'process_text',
-        text: extractedText
-      });
-      return;
-    }
-
-    const mediaImage = captureRenderableMediaFromBounds(bounds);
-    if (mediaImage) {
-      updateMobileLauncher();
-      showStatusCard({
-        title: WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
-        detail: WordMapI18n.t(currentUiLang, 'statusFallbackMediaDetail'),
-        state: 'progress'
-      }, lastX, lastY);
-
-      chrome.runtime.sendMessage({
-        action: 'process_image',
-        imageBase64: mediaImage
-      });
-      return;
-    }
-
-    const detail = /no active web content to capture/i.test(String(rawError || ''))
-      ? `${WordMapI18n.t(currentUiLang, 'errorCaptureFallbackUnavailable')}\n${WordMapI18n.t(currentUiLang, 'errorCaptureNoActiveContent')}\n${rawError}`
-      : rawError
-        ? `${WordMapI18n.t(currentUiLang, 'errorCaptureFailed')}\n${rawError}`
-        : WordMapI18n.t(currentUiLang, 'errorCaptureFailed');
-
-    updateMobileLauncher();
-    showStatusCard({
-      title: WordMapI18n.t(currentUiLang, 'errorTitle'),
-      detail,
-      state: 'error'
-    }, lastX, lastY);
-  }
-
-  function extractVisibleTextFromBounds(bounds) {
-    if (!document.body) return '';
-
-    const items = [];
-    const walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode(node) {
-          const value = String(node.nodeValue || '').replace(/\s+/g, ' ').trim();
-          if (!value) return NodeFilter.FILTER_REJECT;
-          const parent = node.parentElement;
-          if (!parent || !isElementRenderable(parent)) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        }
-      }
-    );
-
-    while (walker.nextNode()) {
-      const textNode = walker.currentNode;
-      const parent = textNode.parentElement;
-      if (!parent) continue;
-
-      const range = document.createRange();
-      range.selectNodeContents(textNode);
-      const rects = Array.from(range.getClientRects());
-      range.detach?.();
-
-      const intersecting = rects.find((rect) => rectIntersectsBounds(rect, bounds));
-      if (!intersecting) continue;
-
-      items.push({
-        text: String(textNode.nodeValue || '').replace(/\s+/g, ' ').trim(),
-        top: intersecting.top,
-        left: intersecting.left
-      });
-    }
-
-    if (!items.length) return '';
-
-    items.sort((a, b) => (a.top - b.top) || (a.left - b.left));
-
-    const lines = [];
-    let currentLineTop = null;
-    let currentLine = [];
-
-    items.forEach((item) => {
-      if (currentLineTop === null || Math.abs(item.top - currentLineTop) <= 14) {
-        currentLineTop = currentLineTop === null ? item.top : currentLineTop;
-        currentLine.push(item.text);
-        return;
-      }
-
-      lines.push(currentLine.join(' '));
-      currentLineTop = item.top;
-      currentLine = [item.text];
-    });
-
-    if (currentLine.length) lines.push(currentLine.join(' '));
-
-    return Array.from(new Set(lines.map((line) => line.trim()).filter(Boolean))).join('\n').trim();
-  }
-
-  function captureRenderableMediaFromBounds(bounds) {
-    const candidates = Array.from(document.querySelectorAll('video, canvas, img'))
-      .filter((element) => isElementRenderable(element) && rectIntersectsBounds(element.getBoundingClientRect(), bounds));
-
-    if (!candidates.length) return '';
-
-    const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-    const output = document.createElement('canvas');
-    output.width = Math.max(1, Math.round(bounds.width * scale));
-    output.height = Math.max(1, Math.round(bounds.height * scale));
-    const outputCtx = output.getContext('2d');
-    outputCtx.scale(scale, scale);
-
-    let drewAny = false;
-
-    candidates.forEach((element) => {
-      const rect = element.getBoundingClientRect();
-      const intersection = getIntersectionRect(rect, bounds);
-      if (!intersection) return;
-
-      const source = getElementSourceSize(element);
-      if (!source.width || !source.height || !rect.width || !rect.height) return;
-
-      const sx = (intersection.left - rect.left) * (source.width / rect.width);
-      const sy = (intersection.top - rect.top) * (source.height / rect.height);
-      const sw = intersection.width * (source.width / rect.width);
-      const sh = intersection.height * (source.height / rect.height);
-      const dx = intersection.left - bounds.left;
-      const dy = intersection.top - bounds.top;
-
-      try {
-        outputCtx.drawImage(element, sx, sy, sw, sh, dx, dy, intersection.width, intersection.height);
-        drewAny = true;
-      } catch (error) {}
-    });
-
-    if (!drewAny) return '';
-
-    try {
-      return output.toDataURL('image/jpeg', 0.96);
-    } catch (error) {
-      return '';
-    }
-  }
-
-  function getElementSourceSize(element) {
-    if (element instanceof HTMLVideoElement) {
-      return { width: element.videoWidth, height: element.videoHeight };
-    }
-    if (element instanceof HTMLCanvasElement) {
-      return { width: element.width, height: element.height };
-    }
-    if (element instanceof HTMLImageElement) {
-      return { width: element.naturalWidth, height: element.naturalHeight };
-    }
-    return { width: 0, height: 0 };
-  }
-
-  function isElementRenderable(element) {
-    if (!element || !element.isConnected) return false;
-    const style = window.getComputedStyle(element);
-    if (!style || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
-      return false;
-    }
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-
-  function rectIntersectsBounds(rect, bounds) {
-    return rect.bottom > bounds.top
-      && rect.top < bounds.bottom
-      && rect.right > bounds.left
-      && rect.left < bounds.right;
-  }
-
-  function getIntersectionRect(rect, bounds) {
-    const left = Math.max(rect.left, bounds.left);
-    const top = Math.max(rect.top, bounds.top);
-    const right = Math.min(rect.right, bounds.right);
-    const bottom = Math.min(rect.bottom, bounds.bottom);
-
-    if (right <= left || bottom <= top) return null;
-    return {
-      left,
-      top,
-      right,
-      bottom,
-      width: right - left,
-      height: bottom - top
-    };
-  }
-
-  function hideDrawHint() {
-    const hint = document.getElementById('wordmap-draw-hint');
-    if (!hint) return;
-    clearDrawHintTimer();
-    hint.classList.add('is-hiding');
-    window.setTimeout(() => {
-      if (hint.classList.contains('is-hiding')) hint.hidden = true;
-    }, 180);
-  }
-
-  function clearDrawHintTimer() {
-    if (!drawHintTimer) return;
-    window.clearTimeout(drawHintTimer);
-    drawHintTimer = null;
   }
 
   function getOrCreateCard(x, y) {
@@ -1085,4 +1206,883 @@
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
   }
+
+
+  const WORDMAP_ROUTER_KEYS = {
+    RELOAD_ARMED: '__wm_router_reload_armed__',
+    SCROLL_X: '__wm_router_scroll_x__',
+    SCROLL_Y: '__wm_router_scroll_y__',
+    AUTO_START: '__wm_router_auto_start__',
+    AUTO_MODE: '__wm_router_auto_mode__'
+  };
+
+  let wordmapProbeReady = false;
+  let routerPrepareInFlight = false;
+  let routerMessageCounter = 1;
+  const routerProbeRequests = new Map();
+
+  function initSmartRouter() {
+    window.addEventListener('message', handleRouterProbeMessage);
+    restoreRouterAfterReloadIfNeeded();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', ensureProbeScriptPresent, { once: true });
+    } else {
+      ensureProbeScriptPresent();
+    }
+  }
+
+  function handleRouterProbeMessage(event) {
+    if (event.source !== window || !event.data || typeof event.data !== 'object') return;
+    if (event.data.source === 'WMV_PROBE' && event.data.type === 'WMV_PROBE_READY') {
+      wordmapProbeReady = true;
+      return;
+    }
+    if (event.data.source === 'WMV_PROBE' && event.data.type === 'WMV_EXPORT_BLOB_RESULT') {
+      const pending = routerProbeRequests.get(event.data.requestId);
+      if (!pending) return;
+      routerProbeRequests.delete(event.data.requestId);
+      pending.resolve(event.data);
+    }
+  }
+
+  function ensureProbeScriptPresent() {
+    if (document.getElementById('wordmap-probe-main')) return;
+    try {
+      const host = document.documentElement || document.head || document.body;
+      if (!host) return;
+      const script = document.createElement('script');
+      script.id = 'wordmap-probe-main';
+      script.src = chrome.runtime.getURL('probe-main.js');
+      script.async = false;
+      host.appendChild(script);
+    } catch {
+      // probe is optional for non-blob pages
+    }
+  }
+
+  function routerSend(message) {
+    return chrome.runtime.sendMessage(message);
+  }
+
+  function requestBlobExportForRouter(url, timeout = 3000) {
+    if (!wordmapProbeReady) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const requestId = `router-blob-${routerMessageCounter++}`;
+      const timer = window.setTimeout(() => {
+        routerProbeRequests.delete(requestId);
+        resolve(null);
+      }, timeout);
+      routerProbeRequests.set(requestId, {
+        resolve: (payload) => {
+          window.clearTimeout(timer);
+          resolve(payload);
+        }
+      });
+      window.postMessage({ source: 'WMV_CONTENT', type: 'WMV_EXPORT_BLOB', url, requestId }, '*');
+    });
+  }
+
+  async function prepareRouterAndOpen(mode) {
+    if (routerPrepareInFlight) return;
+    routerPrepareInFlight = true;
+    currentTool = mode;
+    removeCard();
+    hideMobileLauncher();
+    showStatusCard({
+      title: WordMapI18n.t(currentUiLang, 'statusRouterWarmupTitle'),
+      detail: WordMapI18n.t(currentUiLang, 'statusRouterWarmupDetail'),
+      state: 'progress'
+    }, lastX, lastY);
+
+    try {
+      const prep = await routerSend({ action: 'wm_prepare' });
+      if (!prep || prep.ok === false) {
+        throw new Error(prep && prep.error ? prep.error : 'router_prepare_failed');
+      }
+
+      const armed = sessionStorage.getItem(WORDMAP_ROUTER_KEYS.RELOAD_ARMED);
+      if (prep.requiresReload && armed !== 'done') {
+        sessionStorage.setItem(WORDMAP_ROUTER_KEYS.RELOAD_ARMED, 'pending');
+        sessionStorage.setItem(WORDMAP_ROUTER_KEYS.SCROLL_X, String(window.scrollX || 0));
+        sessionStorage.setItem(WORDMAP_ROUTER_KEYS.SCROLL_Y, String(window.scrollY || 0));
+        sessionStorage.setItem(WORDMAP_ROUTER_KEYS.AUTO_START, '1');
+        sessionStorage.setItem(WORDMAP_ROUTER_KEYS.AUTO_MODE, mode);
+        showStatusCard({
+          title: WordMapI18n.t(currentUiLang, 'statusRouterReloadTitle'),
+          detail: WordMapI18n.t(currentUiLang, 'statusRouterReloadDetail'),
+          state: 'progress'
+        }, lastX, lastY);
+        window.setTimeout(() => location.reload(), 180);
+        return;
+      }
+
+      openDrawCanvas();
+    } catch (error) {
+      updateMobileLauncher();
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'errorRouterPrepare', { message: error.message || String(error) }),
+        state: 'error'
+      }, lastX, lastY);
+    } finally {
+      routerPrepareInFlight = false;
+    }
+  }
+
+  function restoreRouterAfterReloadIfNeeded() {
+    const armed = sessionStorage.getItem(WORDMAP_ROUTER_KEYS.RELOAD_ARMED);
+    if (!armed) return;
+
+    const sx = Number(sessionStorage.getItem(WORDMAP_ROUTER_KEYS.SCROLL_X) || '0');
+    const sy = Number(sessionStorage.getItem(WORDMAP_ROUTER_KEYS.SCROLL_Y) || '0');
+    const autoMode = sessionStorage.getItem(WORDMAP_ROUTER_KEYS.AUTO_MODE) || 'rect';
+
+    sessionStorage.setItem(WORDMAP_ROUTER_KEYS.RELOAD_ARMED, 'done');
+    window.scrollTo(sx, sy);
+
+    if (sessionStorage.getItem(WORDMAP_ROUTER_KEYS.AUTO_START) === '1') {
+      sessionStorage.removeItem(WORDMAP_ROUTER_KEYS.AUTO_START);
+      window.setTimeout(() => {
+        toggleDrawMode(autoMode, { skipRouterPreparation: true });
+      }, 360);
+    }
+  }
+
+  function toggleDrawMode(mode, options = {}) {
+    currentTool = mode;
+
+    if (document.getElementById('wordmap-canvas')) {
+      cleanupCanvas({ restoreLauncher: true });
+      return;
+    }
+
+    if (isTouchEnvironment() && !options.skipRouterPreparation) {
+      prepareRouterAndOpen(mode);
+      return;
+    }
+
+    openDrawCanvas();
+  }
+
+  function openDrawCanvas() {
+    removeCard();
+    hideMobileLauncher();
+
+    canvas = document.createElement('canvas');
+    canvas.id = 'wordmap-canvas';
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    canvas.style.position = 'fixed';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100vw';
+    canvas.style.height = '100vh';
+    canvas.style.zIndex = '999998';
+    canvas.style.cursor = 'crosshair';
+    canvas.style.touchAction = 'none';
+
+    ctx = canvas.getContext('2d');
+    initializeCanvasLook();
+
+    document.body.appendChild(canvas);
+    document.documentElement.classList.add('wordmap-drawing-mode');
+    document.body.classList.add('wordmap-drawing-mode');
+
+    const shouldShowHint = shouldShowDrawHint();
+    if (isTouchEnvironment() && !shouldShowHint) ensureDrawCloseButton();
+    if (shouldShowHint) showDrawHint();
+
+    canvas.addEventListener('pointerdown', handlePointerDown);
+    canvas.addEventListener('pointermove', handlePointerMove);
+    canvas.addEventListener('pointerup', handlePointerUp);
+    canvas.addEventListener('pointercancel', handlePointerCancel);
+  }
+
+  function handleRuntimeMessage(request, sender, sendResponse) {
+    if (request.uiLang) currentUiLang = WordMapI18n.getEffectiveUiLang(request.uiLang);
+
+    if (request.action === 'toggle_draw') {
+      toggleDrawMode(request.mode || 'rect');
+      sendResponse({ status: 'ok' });
+    } else if (request.action === 'show_status') {
+      showStatusCard({ title: request.title, detail: request.detail, state: request.state || 'progress' }, lastX, lastY);
+    } else if (request.action === 'show_result') {
+      renderResult(request.data, lastX, lastY, request.ocrText || '', request.capturePreview || '', request.captureMeta || null);
+    }
+    return true;
+  }
+
+  function finishDrawingAt(clientX, clientY) {
+    isDrawing = false;
+
+    let minX;
+    let minY;
+    let width;
+    let height;
+    const padding = 12;
+
+    if (currentTool === 'pencil') {
+      ctx.closePath();
+      if (points.length < 5) {
+        cleanupCanvas({ restoreLauncher: true });
+        return;
+      }
+
+      const xs = points.map((point) => point.x);
+      const ys = points.map((point) => point.y);
+      minX = Math.max(0, Math.min(...xs) - padding);
+      minY = Math.max(0, Math.min(...ys) - padding);
+      width = Math.min(window.innerWidth - minX, Math.max(...xs) - Math.min(...xs) + padding * 2);
+      height = Math.min(window.innerHeight - minY, Math.max(...ys) - Math.min(...ys) + padding * 2);
+    } else {
+      const rMinX = Math.min(startX, currentX);
+      const rMaxX = Math.max(startX, currentX);
+      const rMinY = Math.min(startY, currentY);
+      const rMaxY = Math.max(startY, currentY);
+
+      if (rMaxX - rMinX < 10 || rMaxY - rMinY < 10) {
+        cleanupCanvas({ restoreLauncher: true });
+        return;
+      }
+
+      minX = Math.max(0, rMinX - padding);
+      minY = Math.max(0, rMinY - padding);
+      width = Math.min(window.innerWidth - minX, rMaxX - rMinX + padding * 2);
+      height = Math.min(window.innerHeight - minY, rMaxY - rMinY + padding * 2);
+    }
+
+    lastX = clientX;
+    lastY = clientY;
+    const selectionBounds = { left: minX, top: minY, width, height, right: minX + width, bottom: minY + height };
+
+    cleanupCanvas({ restoreLauncher: false });
+
+    if (isTouchEnvironment()) {
+      runSmartResourceCapture(selectionBounds).finally(() => updateMobileLauncher());
+      return;
+    }
+
+    showStatusCard({
+      title: WordMapI18n.t(currentUiLang, 'statusPreparingCaptureTitle'),
+      detail: WordMapI18n.t(currentUiLang, 'statusPreparingCaptureDetail'),
+      state: 'progress'
+    }, lastX, lastY);
+
+    chrome.runtime.sendMessage({ action: 'capture_tab' }, (response) => {
+      if (!response || response.error || !response.dataUrl) {
+        updateMobileLauncher();
+        showStatusCard({
+          title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+          detail: WordMapI18n.t(currentUiLang, 'errorCaptureFailed'),
+          state: 'error'
+        }, lastX, lastY);
+        return;
+      }
+      processCapturedDataUrl(response.dataUrl, selectionBounds);
+    });
+  }
+
+  async function runSmartResourceCapture(selectionBounds) {
+    showStatusCard({
+      title: WordMapI18n.t(currentUiLang, 'statusRouterCaptureTitle'),
+      detail: WordMapI18n.t(currentUiLang, 'statusRouterCaptureDetail'),
+      state: 'progress'
+    }, lastX, lastY);
+
+    const debugStatus = await routerSend({ action: 'wm_get_debug_status' }).catch(() => ({ ok: false, attached: false, totalImageEvents: 0 }));
+    const rawCandidates = collectRouterCandidates(selectionBounds);
+    const extractedText = extractTextFromSelection(selectionBounds);
+
+    if (!rawCandidates.length && extractedText) {
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'statusRouterTextFallbackTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'statusRouterTextFallbackDetail'),
+        state: 'progress'
+      }, lastX, lastY);
+      chrome.runtime.sendMessage({ action: 'process_text', text: extractedText, captureMeta: { path: 'dom_text', candidateType: 'text' } });
+      return;
+    }
+
+    const candidates = await hydrateRouterBlobCandidates(rawCandidates);
+    const resolvedResponse = await routerSend({ action: 'wm_resolve_resources', candidates }).catch((error) => ({ ok: false, error: error.message || String(error) }));
+    const resolvedMap = new Map(((resolvedResponse && resolvedResponse.resolved) || []).map((item) => [item.candidateId, item.resource]));
+
+    const previews = [];
+    for (const candidate of candidates) {
+      const resource = resolvedMap.get(candidate.id) || { ok: false, reason: 'resource_not_returned' };
+      const item = { candidate, resource, isUseful: false, blankReason: '', stats: null, previewDataUrl: '' };
+      if (resource.ok && resource.dataUrl) {
+        try {
+          Object.assign(item, await renderRouterCandidatePreview(candidate, resource, selectionBounds));
+        } catch (error) {
+          item.renderError = error.message || String(error);
+        }
+      }
+      previews.push(item);
+    }
+
+    previews.sort((a, b) => {
+      const scoreA = (a.stats && a.stats.score ? a.stats.score : -999) + (a.candidate.overlapArea || 0) / 100;
+      const scoreB = (b.stats && b.stats.score ? b.stats.score : -999) + (b.candidate.overlapArea || 0) / 100;
+      return scoreB - scoreA;
+    });
+
+    const best = previews.find((item) => item.resource && item.resource.ok && item.previewDataUrl && item.isUseful) || null;
+    if (best && best.previewDataUrl) {
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'statusUploadingTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'statusUploadingDetail'),
+        state: 'progress'
+      }, lastX, lastY);
+      chrome.runtime.sendMessage({
+        action: 'process_image',
+        imageBase64: best.previewDataUrl,
+        capturePreview: best.previewDataUrl,
+        captureMeta: {
+          path: best.resource.path || 'router',
+          candidateType: best.candidate.type,
+          sourceUrl: best.resource.sourceUrl || best.candidate.sourceUrl || ''
+        }
+      });
+      return;
+    }
+
+    if (extractedText) {
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'statusRouterTextFallbackTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'statusRouterTextFallbackDetail'),
+        state: 'progress'
+      }, lastX, lastY);
+      chrome.runtime.sendMessage({ action: 'process_text', text: extractedText, captureMeta: { path: 'dom_text', candidateType: 'text' } });
+      return;
+    }
+
+    renderRouterDiagnostics({
+      selection: selectionBounds,
+      debugStatus: debugStatus && debugStatus.ok !== false ? debugStatus : { attached: false, totalImageEvents: 0 },
+      previews,
+      errorMessage: WordMapI18n.t(currentUiLang, 'errorRouterNoPreview')
+    });
+  }
+
+  function collectRouterCandidates(selection) {
+    const selectionRect = toSelectionRect(selection);
+    const candidates = new Map();
+    const seen = new Set();
+
+    function isInternalNode(el) {
+      if (!el) return true;
+      const id = el.id || '';
+      if (id.startsWith('wordmap-') || id.startsWith('wmv-')) return true;
+      const cls = typeof el.className === 'string' ? el.className : '';
+      return /wordmap-|wmv-/.test(cls);
+    }
+
+    function addElement(el) {
+      if (!el || seen.has(el) || isInternalNode(el)) return;
+      seen.add(el);
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) return;
+      const rect = el.getBoundingClientRect();
+      const box = toSelectionRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+      const overlap = intersectRouterRect(selectionRect, box);
+      if (!overlap || overlap.width < 4 || overlap.height < 4) return;
+
+      if (el.tagName === 'IMG' && el.currentSrc) {
+        candidates.set(`img:${el.currentSrc}:${rect.left}:${rect.top}`, {
+          id: `cand-${candidates.size + 1}`,
+          type: 'img',
+          sourceUrl: el.currentSrc,
+          rect: box,
+          overlapArea: overlap.width * overlap.height,
+          naturalWidth: el.naturalWidth || 0,
+          naturalHeight: el.naturalHeight || 0,
+          objectFit: style.objectFit || 'fill',
+          objectPosition: style.objectPosition || '50% 50%'
+        });
+        return;
+      }
+
+      const bg = style.backgroundImage || '';
+      const match = bg.match(/url\(["']?(.*?)["']?\)/i);
+      if (match && match[1]) {
+        candidates.set(`bg:${match[1]}:${rect.left}:${rect.top}`, {
+          id: `cand-${candidates.size + 1}`,
+          type: 'bg',
+          sourceUrl: match[1],
+          rect: box,
+          overlapArea: overlap.width * overlap.height,
+          backgroundSize: style.backgroundSize || 'auto',
+          backgroundPosition: style.backgroundPosition || '0% 0%',
+          backgroundRepeat: style.backgroundRepeat || 'repeat'
+        });
+      }
+    }
+
+    const sampleCols = 4;
+    const sampleRows = 4;
+    for (let row = 0; row <= sampleRows; row += 1) {
+      for (let col = 0; col <= sampleCols; col += 1) {
+        const x = selection.left + (selection.width * col) / sampleCols;
+        const y = selection.top + (selection.height * row) / sampleRows;
+        const stack = document.elementsFromPoint(clamp(x, 0, window.innerWidth - 1), clamp(y, 0, window.innerHeight - 1));
+        stack.forEach((el) => {
+          let node = el;
+          for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+            addElement(node);
+          }
+        });
+      }
+    }
+
+    Array.from(document.images).forEach(addElement);
+
+    return Array.from(candidates.values())
+      .sort((a, b) => (b.overlapArea || 0) - (a.overlapArea || 0))
+      .slice(0, 8);
+  }
+
+  async function hydrateRouterBlobCandidates(candidates) {
+    const hydrated = [];
+    for (const candidate of candidates) {
+      const next = { ...candidate };
+      if (candidate.sourceUrl.startsWith('blob:') && wordmapProbeReady) {
+        const exported = await requestBlobExportForRouter(candidate.sourceUrl);
+        if (exported && exported.ok && exported.dataUrl) {
+          next.inlineDataUrl = exported.dataUrl;
+          next.inlineMimeType = exported.mimeType || 'image/png';
+        }
+      }
+      hydrated.push(next);
+    }
+    return hydrated;
+  }
+
+  function intersectRouterRect(a, b) {
+    const left = Math.max(a.left, b.left);
+    const top = Math.max(a.top, b.top);
+    const right = Math.min(a.right, b.right);
+    const bottom = Math.min(a.bottom, b.bottom);
+    if (right <= left || bottom <= top) return null;
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }
+
+  function parseRouterPositionPair(raw) {
+    const value = (raw || '50% 50%').trim().replace(/\s+/g, ' ');
+    const parts = value.split(' ');
+    return [routerPositionToFraction(parts[0] || '50%'), routerPositionToFraction(parts[1] || '50%')];
+  }
+
+  function routerPositionToFraction(token) {
+    const normalized = String(token || '').trim().toLowerCase();
+    if (normalized === 'left' || normalized === 'top') return 0;
+    if (normalized === 'center') return 0.5;
+    if (normalized === 'right' || normalized === 'bottom') return 1;
+    if (normalized.endsWith('%')) {
+      const num = Number(normalized.slice(0, -1));
+      if (!Number.isNaN(num)) return num / 100;
+    }
+    return 0.5;
+  }
+
+  function parseRouterBackgroundSize(raw, boxWidth, boxHeight, imageWidth, imageHeight) {
+    const value = (raw || 'auto').trim().toLowerCase();
+    if (value === 'cover') {
+      const scale = Math.max(boxWidth / imageWidth, boxHeight / imageHeight);
+      return { width: imageWidth * scale, height: imageHeight * scale };
+    }
+    if (value === 'contain') {
+      const scale = Math.min(boxWidth / imageWidth, boxHeight / imageHeight);
+      return { width: imageWidth * scale, height: imageHeight * scale };
+    }
+    if (value === 'auto') {
+      return { width: imageWidth, height: imageHeight };
+    }
+
+    const parts = value.split(' ');
+    const first = parts[0];
+    const second = parts[1] || 'auto';
+    function lenToPx(token, axisLength) {
+      if (token === 'auto') return null;
+      if (token.endsWith('%')) return axisLength * (Number(token.slice(0, -1)) / 100);
+      if (token.endsWith('px')) return Number(token.slice(0, -2));
+      const num = Number(token);
+      return Number.isFinite(num) ? num : null;
+    }
+    let w = lenToPx(first, boxWidth);
+    let h = lenToPx(second, boxHeight);
+    if (w == null && h == null) return { width: imageWidth, height: imageHeight };
+    if (w == null) w = (h / imageHeight) * imageWidth;
+    if (h == null) h = (w / imageWidth) * imageHeight;
+    return { width: w, height: h };
+  }
+
+  function computeRouterCrop(candidate, selection, imageWidth, imageHeight) {
+    const local = {
+      left: selection.left - candidate.rect.left,
+      top: selection.top - candidate.rect.top,
+      width: selection.width,
+      height: selection.height
+    };
+    if (candidate.type === 'bg') {
+      return computeRouterBackgroundCrop(candidate, local, imageWidth, imageHeight);
+    }
+    return computeRouterImageCrop(candidate, local, imageWidth, imageHeight);
+  }
+
+  function computeRouterImageCrop(candidate, local, imageWidth, imageHeight) {
+    const rectW = candidate.rect.width;
+    const rectH = candidate.rect.height;
+    const fit = (candidate.objectFit || 'fill').toLowerCase();
+    const pos = parseRouterPositionPair(candidate.objectPosition || '50% 50%');
+    const posX = pos[0];
+    const posY = pos[1];
+
+    let drawnW;
+    let drawnH;
+    let scaleX;
+    let scaleY;
+    let offsetX;
+    let offsetY;
+
+    if (fit === 'fill') {
+      drawnW = rectW;
+      drawnH = rectH;
+      scaleX = rectW / imageWidth;
+      scaleY = rectH / imageHeight;
+      offsetX = 0;
+      offsetY = 0;
+    } else {
+      let scale;
+      if (fit === 'contain') scale = Math.min(rectW / imageWidth, rectH / imageHeight);
+      else if (fit === 'cover') scale = Math.max(rectW / imageWidth, rectH / imageHeight);
+      else if (fit === 'none') scale = 1;
+      else if (fit === 'scale-down') scale = Math.min(1, Math.min(rectW / imageWidth, rectH / imageHeight));
+      else scale = Math.min(rectW / imageWidth, rectH / imageHeight);
+
+      drawnW = imageWidth * scale;
+      drawnH = imageHeight * scale;
+      scaleX = scale;
+      scaleY = scale;
+      offsetX = (rectW - drawnW) * posX;
+      offsetY = (rectH - drawnH) * posY;
+    }
+
+    const overlap = intersectRouterRect(
+      { left: local.left, top: local.top, right: local.left + local.width, bottom: local.top + local.height, width: local.width, height: local.height },
+      { left: offsetX, top: offsetY, right: offsetX + drawnW, bottom: offsetY + drawnH, width: drawnW, height: drawnH }
+    );
+    if (!overlap) return { ok: false, error: 'selection_hits_only_blank_object_fit_padding' };
+
+    const sx = clamp((overlap.left - offsetX) / scaleX, 0, imageWidth);
+    const sy = clamp((overlap.top - offsetY) / scaleY, 0, imageHeight);
+    const sw = clamp(overlap.width / scaleX, 1, imageWidth - sx);
+    const sh = clamp(overlap.height / scaleY, 1, imageHeight - sy);
+
+    return {
+      ok: true,
+      source: { sx, sy, sw, sh },
+      output: { width: Math.max(1, Math.round(overlap.width)), height: Math.max(1, Math.round(overlap.height)) }
+    };
+  }
+
+  function computeRouterBackgroundCrop(candidate, local, imageWidth, imageHeight) {
+    const rectW = candidate.rect.width;
+    const rectH = candidate.rect.height;
+    const repeat = (candidate.backgroundRepeat || 'repeat').toLowerCase();
+    if (repeat !== 'no-repeat') return { ok: false, error: 'background_repeat_unsupported' };
+
+    const size = parseRouterBackgroundSize(candidate.backgroundSize, rectW, rectH, imageWidth, imageHeight);
+    const pos = parseRouterPositionPair(candidate.backgroundPosition || '0% 0%');
+    const drawnW = size.width;
+    const drawnH = size.height;
+    const offsetX = (rectW - drawnW) * pos[0];
+    const offsetY = (rectH - drawnH) * pos[1];
+
+    const overlap = intersectRouterRect(
+      { left: local.left, top: local.top, right: local.left + local.width, bottom: local.top + local.height, width: local.width, height: local.height },
+      { left: offsetX, top: offsetY, right: offsetX + drawnW, bottom: offsetY + drawnH, width: drawnW, height: drawnH }
+    );
+    if (!overlap) return { ok: false, error: 'selection_not_on_background_pixels' };
+
+    const scaleX = drawnW / imageWidth;
+    const scaleY = drawnH / imageHeight;
+    const sx = clamp((overlap.left - offsetX) / scaleX, 0, imageWidth);
+    const sy = clamp((overlap.top - offsetY) / scaleY, 0, imageHeight);
+    const sw = clamp(overlap.width / scaleX, 1, imageWidth - sx);
+    const sh = clamp(overlap.height / scaleY, 1, imageHeight - sy);
+
+    return {
+      ok: true,
+      source: { sx, sy, sw, sh },
+      output: { width: Math.max(1, Math.round(overlap.width)), height: Math.max(1, Math.round(overlap.height)) }
+    };
+  }
+
+  function loadRouterImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('image_decode_failed'));
+      image.src = dataUrl;
+    });
+  }
+
+  function analyzeRouterCanvas(canvasToCheck) {
+    const sampleW = Math.min(128, canvasToCheck.width);
+    const sampleH = Math.min(128, canvasToCheck.height);
+    const temp = document.createElement('canvas');
+    temp.width = sampleW;
+    temp.height = sampleH;
+    temp.getContext('2d').drawImage(canvasToCheck, 0, 0, sampleW, sampleH);
+    const data = temp.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, sampleW, sampleH).data;
+
+    let sum = 0;
+    let sumSq = 0;
+    let dark = 0;
+    let light = 0;
+    const grays = new Float32Array(sampleW * sampleH);
+
+    for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
+      const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      grays[p] = gray;
+      sum += gray;
+      sumSq += gray * gray;
+      if (gray < 18) dark += 1;
+      if (gray > 237) light += 1;
+    }
+
+    const total = sampleW * sampleH;
+    const mean = sum / total;
+    const variance = sumSq / total - mean * mean;
+    let edges = 0;
+    for (let y = 1; y < sampleH; y += 1) {
+      for (let x = 1; x < sampleW; x += 1) {
+        const idx = y * sampleW + x;
+        const dx = Math.abs(grays[idx] - grays[idx - 1]);
+        const dy = Math.abs(grays[idx] - grays[idx - sampleW]);
+        if (dx + dy > 32) edges += 1;
+      }
+    }
+    const edgeDensity = edges / total;
+    const darkRatio = dark / total;
+    const lightRatio = light / total;
+    const isMostlyBlack = darkRatio > 0.97;
+    const isMostlyWhite = lightRatio > 0.97;
+    const isLowInfo = variance < 18 && edgeDensity < 0.015;
+    const isUseful = !(isMostlyBlack || isMostlyWhite || isLowInfo);
+
+    let blankReason = '';
+    if (isMostlyBlack) blankReason = 'almost_black';
+    else if (isMostlyWhite) blankReason = 'almost_white';
+    else if (isLowInfo) blankReason = 'low_information';
+
+    return {
+      mean,
+      variance,
+      edgeDensity,
+      darkRatio,
+      lightRatio,
+      isUseful,
+      blankReason,
+      score: variance + edgeDensity * 500 + Math.min(400, canvasToCheck.width * canvasToCheck.height / 1200)
+    };
+  }
+
+  async function renderRouterCandidatePreview(candidate, resource, selection) {
+    const image = await loadRouterImage(resource.dataUrl);
+    const crop = computeRouterCrop(candidate, selection, image.naturalWidth || image.width, image.naturalHeight || image.height);
+    if (!crop.ok) return { renderError: crop.error };
+
+    const outW = clamp(crop.output.width, 1, 2200);
+    const outH = clamp(crop.output.height, 1, 2200);
+    const canvasOut = document.createElement('canvas');
+    canvasOut.width = outW;
+    canvasOut.height = outH;
+    const canvasCtx = canvasOut.getContext('2d');
+    canvasCtx.fillStyle = '#ffffff';
+    canvasCtx.fillRect(0, 0, outW, outH);
+    canvasCtx.drawImage(image, crop.source.sx, crop.source.sy, crop.source.sw, crop.source.sh, 0, 0, outW, outH);
+
+    const stats = analyzeRouterCanvas(canvasOut);
+    return {
+      previewDataUrl: canvasOut.toDataURL('image/png'),
+      stats,
+      blankReason: stats.blankReason,
+      isUseful: stats.isUseful
+    };
+  }
+
+  function renderResult(data, x, y, ocrText, capturePreview = '', captureMeta = null) {
+    const pairData = data && typeof data === 'object' ? data : {};
+    let fullTranslation = '';
+    let wordPairs = [];
+
+    if (Array.isArray(data)) {
+      wordPairs = data;
+    } else if (pairData && typeof pairData === 'object') {
+      fullTranslation = pairData.full_translation || pairData.translation || '';
+      wordPairs = Array.isArray(pairData.words) ? pairData.words : [];
+    }
+
+    if (!fullTranslation && wordPairs.length === 0) {
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'errorTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'resultEmpty'),
+        state: 'error'
+      }, x, y);
+      return;
+    }
+
+    const cardParts = [];
+    if (capturePreview) {
+      const section = createSection(WordMapI18n.t(currentUiLang, 'resultSectionCapturePreview'));
+      const img = document.createElement('img');
+      img.className = 'wordmap-capture-preview';
+      img.src = capturePreview;
+      img.alt = 'capture preview';
+      section.appendChild(img);
+      if (captureMeta && (captureMeta.path || captureMeta.candidateType)) {
+        const meta = document.createElement('div');
+        meta.className = 'wordmap-meta-line';
+        const path = captureMeta.path || 'router';
+        const type = captureMeta.candidateType || 'image';
+        meta.innerHTML = `<strong>${WordMapI18n.t(currentUiLang, 'resultSectionCaptureMeta')}</strong> · ${escapeHtml(type)} / ${escapeHtml(path)}`;
+        section.appendChild(meta);
+      }
+      cardParts.push(section);
+    }
+
+    if (ocrText) {
+      const section = createSection(WordMapI18n.t(currentUiLang, 'resultSectionDetectedText'));
+      const text = document.createElement('div');
+      text.className = 'wordmap-ocr-text';
+      text.textContent = ocrText;
+      section.appendChild(text);
+      cardParts.push(section);
+    }
+
+    if (fullTranslation) {
+      const section = createSection(WordMapI18n.t(currentUiLang, 'resultSectionTranslation'));
+      const text = document.createElement('div');
+      text.className = 'wordmap-full-translation';
+      text.textContent = fullTranslation;
+      cardParts.push(section);
+      section.appendChild(text);
+    }
+
+    if (wordPairs.length > 0) {
+      const section = createSection(WordMapI18n.t(currentUiLang, 'resultSectionGlossary'));
+      section.classList.add('wordmap-section--full');
+      const list = document.createElement('div');
+      list.className = 'wordmap-words-container';
+      wordPairs.forEach((pair) => {
+        const chip = document.createElement('div');
+        chip.className = 'word-pair';
+        const src = document.createElement('div');
+        src.className = 'word-en';
+        src.textContent = pair.src || pair.en || pair.text || pair.original || '—';
+        const dst = document.createElement('div');
+        dst.className = 'word-zh';
+        dst.textContent = pair.dst || pair.zh || pair.translation || pair.Chinese || WordMapI18n.t(currentUiLang, 'resultNoGloss');
+        chip.appendChild(src);
+        chip.appendChild(dst);
+        list.appendChild(chip);
+      });
+      section.appendChild(list);
+      cardParts.push(section);
+    }
+
+    const { card, content } = getOrCreateCard(x, y);
+    content.innerHTML = '';
+    const grid = document.createElement('div');
+    grid.className = 'wordmap-result-grid';
+    if (capturePreview && (ocrText || fullTranslation)) {
+      cardParts[0].classList.add('wordmap-section--full');
+    }
+    cardParts.forEach((section) => grid.appendChild(section));
+    content.appendChild(grid);
+    positionCard(card, x, y);
+  }
+
+  function renderRouterDiagnostics(payload) {
+    const { card, content } = getOrCreateCard(lastX, lastY);
+    content.innerHTML = '';
+
+    const top = document.createElement('div');
+    top.className = 'wordmap-status wordmap-status--error';
+    top.innerHTML = `
+      <div class="wordmap-status-visual wordmap-status-error-icon">✕</div>
+      <div class="wordmap-status-copy">
+        <div class="wordmap-status-title">${escapeHtml(WordMapI18n.t(currentUiLang, 'errorTitle'))}</div>
+        <div class="wordmap-status-detail">${escapeHtml(payload.errorMessage || WordMapI18n.t(currentUiLang, 'errorRouterNoPreview'))}</div>
+      </div>
+    `;
+    content.appendChild(top);
+
+    const summary = createSection(WordMapI18n.t(currentUiLang, 'resultSectionDiagnostics'));
+    const debug = payload.debugStatus || {};
+    const details = document.createElement('div');
+    details.className = 'wordmap-meta-line';
+    details.innerHTML = `
+      <strong>${WordMapI18n.t(currentUiLang, 'diagnosticSelection')}</strong> · ${Math.round(payload.selection.width)} × ${Math.round(payload.selection.height)}<br>
+      <strong>Debugger</strong> · ${debug.attached ? 'attached' : 'not attached'}<br>
+      <strong>Network</strong> · ${Number(debug.totalImageEvents || 0)} image events
+    `;
+    summary.appendChild(details);
+    content.appendChild(summary);
+
+    const previewSection = createSection(WordMapI18n.t(currentUiLang, 'resultSectionCapturePreview'));
+    previewSection.classList.add('wordmap-section--full');
+    const grid = document.createElement('div');
+    grid.className = 'wordmap-diagnostics-grid';
+
+    const previews = Array.isArray(payload.previews) ? payload.previews : [];
+    previews.forEach((item, index) => {
+      const cardNode = document.createElement('div');
+      cardNode.className = `wordmap-diagnostic-card ${item.isUseful ? 'wordmap-diagnostic-card--good' : 'wordmap-diagnostic-card--bad'}`;
+
+      if (item.previewDataUrl) {
+        const img = document.createElement('img');
+        img.className = 'wordmap-diagnostic-preview';
+        img.src = item.previewDataUrl;
+        img.alt = `candidate ${index + 1}`;
+        cardNode.appendChild(img);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'wordmap-diagnostic-empty';
+        cardNode.appendChild(empty);
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'wordmap-diagnostic-meta';
+      const lines = [
+        `${WordMapI18n.t(currentUiLang, 'diagnosticCandidate')} #${index + 1} · ${item.candidate.type}`,
+        `${WordMapI18n.t(currentUiLang, 'diagnosticPath')} · ${item.resource && item.resource.path ? item.resource.path : 'unresolved'}`,
+        `${WordMapI18n.t(currentUiLang, 'diagnosticScore')} · ${item.stats ? item.stats.score.toFixed(1) : 'n/a'}`,
+        `${WordMapI18n.t(currentUiLang, 'diagnosticSource')} · ${truncateText(item.resource && (item.resource.sourceUrl || item.candidate.sourceUrl) || '', 72)}`
+      ];
+      if (item.blankReason) lines.push(`${WordMapI18n.t(currentUiLang, 'diagnosticReason')} · ${item.blankReason}`);
+      if (item.renderError) lines.push(`${WordMapI18n.t(currentUiLang, 'diagnosticReason')} · ${item.renderError}`);
+      if (item.resource && !item.resource.ok && item.resource.reason) lines.push(`${WordMapI18n.t(currentUiLang, 'diagnosticReason')} · ${item.resource.reason}`);
+      meta.innerHTML = escapeHtml(lines.join('\n')).replace(/\n/g, '<br>');
+      cardNode.appendChild(meta);
+      grid.appendChild(cardNode);
+    });
+
+    previewSection.appendChild(grid);
+    content.appendChild(previewSection);
+    positionCard(card, lastX, lastY);
+  }
+
+  function truncateText(text, max = 72) {
+    const value = String(text || '');
+    return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+  }
+
+  function escapeHtml(text) {
+    return String(text || '').replace(/[&<>\"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  }
+
+  initSmartRouter();
 })();

@@ -15,7 +15,7 @@ const REQUIRED_KEYS = ['apiBaseUrl', 'modelName'];
 const DEFAULT_STATE = {
   uiLang: WordMapI18n.getEffectiveUiLang(),
   sourceLang: 'eng',
-  targetLang: 'Chinese',
+  targetLang: WordMapI18n.TARGET_LANG_SIMPLIFIED_CHINESE,
   mobileQuickEnabled: true,
   mobileQuickMode: 'rect'
 };
@@ -28,6 +28,7 @@ const elements = {};
 document.addEventListener('DOMContentLoaded', init);
 
 function init() {
+  applyPlatformClass();
   cacheElements();
   bindEvents();
 
@@ -38,9 +39,15 @@ function init() {
     populateSelects(stored);
     syncAdvancedState();
     updateUiState();
-    persistSettings(false); // backfill missing defaults / normalize URL
+    persistSettings(false);
     isReady = true;
   });
+}
+
+function applyPlatformClass() {
+  const touch = isTouchEnvironment();
+  document.documentElement.classList.toggle('wordmap-touch-ui', touch);
+  document.documentElement.classList.toggle('wordmap-desktop-ui', !touch);
 }
 
 function cacheElements() {
@@ -113,9 +120,13 @@ function renderStaticText() {
 }
 
 function populateSelects(stored) {
-  fillSelect(elements.sourceLang, WordMapI18n.getOcrLanguageOptions(uiLang), stored.sourceLang || DEFAULT_STATE.sourceLang);
-  fillSelect(elements.targetLang, WordMapI18n.getTargetLanguageOptions(uiLang), stored.targetLang || DEFAULT_STATE.targetLang);
-  fillSelect(elements.mobileQuickMode, WordMapI18n.getCaptureModeOptions(uiLang), stored.mobileQuickMode || DEFAULT_STATE.mobileQuickMode);
+  const selectedSourceLang = stored.sourceLang || DEFAULT_STATE.sourceLang;
+  const selectedTargetLang = WordMapI18n.normalizeTargetLang(stored.targetLang || DEFAULT_STATE.targetLang);
+  const selectedQuickMode = stored.mobileQuickMode || DEFAULT_STATE.mobileQuickMode;
+
+  fillSelect(elements.sourceLang, WordMapI18n.getOcrLanguageOptions(uiLang), selectedSourceLang);
+  fillSelect(elements.targetLang, WordMapI18n.getTargetLanguageOptions(uiLang), selectedTargetLang);
+  fillSelect(elements.mobileQuickMode, WordMapI18n.getCaptureModeOptions(uiLang), selectedQuickMode);
 }
 
 function fillSelect(selectElement, options, selectedValue) {
@@ -161,7 +172,7 @@ function getFormState() {
     apiKey: elements.apiKey.value.trim(),
     ocrApiKey: elements.ocrApiKey.value.trim(),
     sourceLang: elements.sourceLang.value,
-    targetLang: elements.targetLang.value,
+    targetLang: WordMapI18n.normalizeTargetLang(elements.targetLang.value),
     uiLang,
     mobileQuickEnabled: Boolean(elements.mobileQuickEnabled.checked),
     mobileQuickMode: elements.mobileQuickMode.value || DEFAULT_STATE.mobileQuickMode
