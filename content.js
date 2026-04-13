@@ -17,6 +17,7 @@
   let mobileQuickMode = 'rect';
   let mobileLauncherPosition = null;
   let launcherToastTimer = null;
+  let routerWarmupTimer = null;
   let drawHintSeenDesktop = false;
   let drawHintSeenTouch = false;
 
@@ -1213,7 +1214,8 @@
     SCROLL_X: '__wm_router_scroll_x__',
     SCROLL_Y: '__wm_router_scroll_y__',
     AUTO_START: '__wm_router_auto_start__',
-    AUTO_MODE: '__wm_router_auto_mode__'
+    AUTO_MODE: '__wm_router_auto_mode__',
+    WARMUP_HINT_SHOWN: '__wm_router_warmup_hint_shown__'
   };
 
   let wordmapProbeReady = false;
@@ -1288,11 +1290,21 @@
     currentTool = mode;
     removeCard();
     hideMobileLauncher();
-    showStatusCard({
-      title: WordMapI18n.t(currentUiLang, 'statusRouterWarmupTitle'),
-      detail: WordMapI18n.t(currentUiLang, 'statusRouterWarmupDetail'),
-      state: 'progress'
-    }, lastX, lastY);
+
+    const shouldShowWarmupHint = sessionStorage.getItem(WORDMAP_ROUTER_KEYS.WARMUP_HINT_SHOWN) !== '1';
+    window.clearTimeout(routerWarmupTimer);
+    routerWarmupTimer = null;
+    if (shouldShowWarmupHint) {
+      routerWarmupTimer = window.setTimeout(() => {
+        if (!routerPrepareInFlight) return;
+        sessionStorage.setItem(WORDMAP_ROUTER_KEYS.WARMUP_HINT_SHOWN, '1');
+        showStatusCard({
+          title: WordMapI18n.t(currentUiLang, 'statusRouterWarmupTitle'),
+          detail: WordMapI18n.t(currentUiLang, 'statusRouterWarmupDetail'),
+          state: 'progress'
+        }, lastX, lastY);
+      }, 280);
+    }
 
     try {
       const prep = await routerSend({ action: 'wm_prepare' });
@@ -1302,6 +1314,8 @@
 
       const armed = sessionStorage.getItem(WORDMAP_ROUTER_KEYS.RELOAD_ARMED);
       if (prep.requiresReload && armed !== 'done') {
+        window.clearTimeout(routerWarmupTimer);
+        routerWarmupTimer = null;
         sessionStorage.setItem(WORDMAP_ROUTER_KEYS.RELOAD_ARMED, 'pending');
         sessionStorage.setItem(WORDMAP_ROUTER_KEYS.SCROLL_X, String(window.scrollX || 0));
         sessionStorage.setItem(WORDMAP_ROUTER_KEYS.SCROLL_Y, String(window.scrollY || 0));
@@ -1316,8 +1330,12 @@
         return;
       }
 
+      window.clearTimeout(routerWarmupTimer);
+      routerWarmupTimer = null;
       openDrawCanvas();
     } catch (error) {
+      window.clearTimeout(routerWarmupTimer);
+      routerWarmupTimer = null;
       updateMobileLauncher();
       showStatusCard({
         title: WordMapI18n.t(currentUiLang, 'errorTitle'),
@@ -1325,6 +1343,8 @@
         state: 'error'
       }, lastX, lastY);
     } finally {
+      window.clearTimeout(routerWarmupTimer);
+      routerWarmupTimer = null;
       routerPrepareInFlight = false;
     }
   }
