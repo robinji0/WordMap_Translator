@@ -101,14 +101,26 @@ async function ensureDebugger(tabId) {
   const task = (async () => {
   const session = getSession(tabId);
   if (!session.attached) {
+    let attachedSuccessfully = false;
     try {
       await debugAttach(tabId);
+      attachedSuccessfully = true;
       pushDiag(session, 'debugger_attached');
     } catch (error) {
       if (!isAlreadyAttachedError(error)) throw error;
-      pushDiag(session, 'debugger_attach_reused_existing');
+      pushDiag(session, 'debugger_attach_conflict_force_detach');
+      try {
+        await debugDetach(tabId);
+        pushDiag(session, 'debugger_force_detached');
+      } catch {
+        // ignore detach error
+      }
+      await new Promise(r => setTimeout(r, 50));
+      await debugAttach(tabId);
+      attachedSuccessfully = true;
+      pushDiag(session, 'debugger_attached_after_force_detach');
     }
-    session.attached = true;
+    session.attached = attachedSuccessfully;
     session.attachedAt = Date.now();
   }
   if (!session.networkEnabled) {
