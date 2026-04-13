@@ -108,30 +108,31 @@ async function ensureDebugger(tabId) {
       pushDiag(session, 'debugger_attached');
     } catch (error) {
       if (!isAlreadyAttachedError(error)) throw error;
-      pushDiag(session, 'debugger_attach_conflict_force_detach');
-      try {
-        await debugDetach(tabId);
-        pushDiag(session, 'debugger_force_detached');
-      } catch {
-        // ignore detach error
-      }
-      await new Promise(r => setTimeout(r, 50));
-      await debugAttach(tabId);
+      pushDiag(session, 'debugger_already_attached_by_other_session');
       attachedSuccessfully = true;
-      pushDiag(session, 'debugger_attached_after_force_detach');
     }
     session.attached = attachedSuccessfully;
     session.attachedAt = Date.now();
   }
   if (!session.networkEnabled) {
-    await sendCommand(tabId, 'Network.enable');
     try {
-      await sendCommand(tabId, 'Page.enable');
-    } catch {
-      // ignore
+      await sendCommand(tabId, 'Network.enable');
+      try {
+        await sendCommand(tabId, 'Page.enable');
+      } catch {
+        // ignore
+      }
+      session.networkEnabled = true;
+      pushDiag(session, 'network_enabled');
+    } catch (error) {
+      if (isAlreadyAttachedError(error)) {
+        pushDiag(session, 'network_enable_failed_already_detached');
+      } else {
+        pushDiag(session, `network_enable_failed:${error.message}`);
+        session.attached = false;
+        throw error;
+      }
     }
-    session.networkEnabled = true;
-    pushDiag(session, 'network_enabled');
   }
   return session;
   })().finally(() => {
@@ -505,9 +506,27 @@ function bodyToDataUrl(bodyResult, fallbackMimeType = 'image/png') {
   }
 }
 
-async function getImageBodyViaDebugger(tabId, requestId, mimeType) {
-  const bodyResult = await sendCommand(tabId, 'Network.getResponseBody', { requestId });
-  return bodyToDataUrl(bodyResult, mimeType);
+async function getImageBodyViaDebugger(tabId, requestId, mimeType, retryCount = 0) {
+  try {
+    const bodyResult = await sendCommand(tabId, 'Network.getResponseBody', { requestId });
+    return bodyToDataUrl(bodyResult, mimeType);
+  } catch (error) {
+    if (retryCount > 0) throw error;
+    const session = getSession(tabId);
+    if (session.attached) {
+      pushDiag(session, `network_get_body_failed_attempt_recovery:${error.message}`);
+      session.attached = false;
+      session.networkEnabled = false;
+      try {
+        await ensureDebugger(tabId);
+        return getImageBodyViaDebugger(tabId, requestId, mimeType, 1);
+      } catch (recoveryError) {
+        pushDiag(session, `debugger_recovery_failed:${recoveryError.message}`);
+        throw error;
+      }
+    }
+    throw error;
+  }
 }
 
 async function resolveCandidateResource(tabId, candidate) {
