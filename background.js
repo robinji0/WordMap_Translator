@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS = {
 let lastActiveWebTabId = null;
 const sessions = new Map();
 const ensureDebuggerTasks = new Map();
+const DEBUGGER_IMAGE_EVENT_STALE_MS = 5 * 60 * 1000;
 
 function dbgTarget(tabId) {
   return { tabId };
@@ -43,6 +44,7 @@ function getSession(tabId) {
       attached: false,
       networkEnabled: false,
       attachedAt: 0,
+      lastImageEventAt: 0,
       imagesByUrl: new Map(),
       imagesByRequestId: new Map(),
       totalImageEvents: 0,
@@ -56,6 +58,33 @@ function getSession(tabId) {
 function pushDiag(session, message) {
   session.diagnostics.push({ ts: Date.now(), message });
   if (session.diagnostics.length > 60) session.diagnostics.shift();
+}
+
+function resetSessionImageCache(session, reason = '') {
+  session.imagesByUrl.clear();
+  session.imagesByRequestId.clear();
+  session.totalImageEvents = 0;
+  session.lastImageEventAt = 0;
+  if (reason) pushDiag(session, reason);
+}
+
+function removeRememberedImageRequest(session, requestId) {
+  if (!session || !requestId) return;
+  const info = session.imagesByRequestId.get(requestId);
+  if (!info) return;
+  session.imagesByRequestId.delete(requestId);
+  const list = session.imagesByUrl.get(info.normalizedUrl);
+  if (!Array.isArray(list) || !list.length) return;
+  const nextList = list.filter((item) => item.requestId !== requestId);
+  if (nextList.length) session.imagesByUrl.set(info.normalizedUrl, nextList);
+  else session.imagesByUrl.delete(info.normalizedUrl);
+}
+
+function shouldRefreshImageEvents(session) {
+  if (!session) return true;
+  if (session.totalImageEvents === 0) return true;
+  if (!session.lastImageEventAt) return true;
+  return (Date.now() - session.lastImageEventAt) > DEBUGGER_IMAGE_EVENT_STALE_MS;
 }
 
 function debugAttach(tabId) {
@@ -122,6 +151,12 @@ async function ensureDebugger(tabId) {
       } catch {
         // ignore
       }
+      try {
+        await sendCommand(tabId, 'Network.setCacheDisabled', { cacheDisabled: true });
+        pushDiag(session, 'network_cache_disabled');
+      } catch (error) {
+        pushDiag(session, `network_cache_disable_failed:${error.message}`);
+      }
       session.networkEnabled = true;
       pushDiag(session, 'network_enabled');
     } catch (error) {
@@ -141,6 +176,26 @@ async function ensureDebugger(tabId) {
 
   ensureDebuggerTasks.set(tabId, task);
   return task;
+}
+
+async function refreshDebuggerSession(tabId, reason = 'fresh_prepare_requested') {
+  const session = getSession(tabId);
+  pushDiag(session, reason);
+
+  if (session.attached) {
+    try {
+      await debugDetach(tabId);
+      pushDiag(session, 'debugger_detached_for_fresh_prepare');
+    } catch (error) {
+      pushDiag(session, `debugger_detach_failed_before_refresh:${error.message}`);
+    }
+  }
+
+  session.attached = false;
+  session.networkEnabled = false;
+  session.attachedAt = 0;
+  resetSessionImageCache(session, 'fresh_prepare_cache_reset');
+  return ensureDebugger(tabId);
 }
 
 function rememberImageResponse(tabId, payload) {
@@ -171,6 +226,7 @@ function rememberImageResponse(tabId, payload) {
   list.push(info);
   if (list.length > 12) list.shift();
   session.totalImageEvents += 1;
+  session.lastImageEventAt = info.ts;
 }
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
@@ -186,6 +242,8 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   if (!session) return;
   session.attached = false;
   session.networkEnabled = false;
+  session.attachedAt = 0;
+  resetSessionImageCache(session);
   pushDiag(session, `debugger_detached:${reason}`);
 });
 
@@ -202,6 +260,10 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'loading' || changeInfo.url) {
+    const session = sessions.get(tabId);
+    if (session) resetSessionImageCache(session, 'tab_navigation_reset');
+  }
   if (!tab || !tab.active) return;
   if (changeInfo.url || changeInfo.status === 'complete') rememberTabIfWebPage(tab);
 });
@@ -511,8 +573,9 @@ async function getImageBodyViaDebugger(tabId, requestId, mimeType, retryCount = 
     const bodyResult = await sendCommand(tabId, 'Network.getResponseBody', { requestId });
     return bodyToDataUrl(bodyResult, mimeType);
   } catch (error) {
-    if (retryCount > 0) throw error;
     const session = getSession(tabId);
+    removeRememberedImageRequest(session, requestId);
+    if (retryCount > 0) throw error;
     if (session.attached) {
       pushDiag(session, `network_get_body_failed_attempt_recovery:${error.message}`);
       session.attached = false;
@@ -564,43 +627,50 @@ async function resolveCandidateResource(tabId, candidate) {
 
   const session = getSession(tabId);
   const key = normalizeUrl(candidate.sourceUrl);
-  const matches = session.imagesByUrl.get(key) || [];
-  const latest = [...matches].sort((a, b) => b.ts - a.ts)[0];
-  if (!latest) {
-    return {
-      ok: false,
-      reason: 'no_cdp_network_match',
-      sourceUrl: candidate.sourceUrl
-    };
+  const matches = [...(session.imagesByUrl.get(key) || [])].sort((a, b) => {
+    const cachePenaltyA = (a.fromDiskCache || a.fromPrefetchCache) ? 1 : 0;
+    const cachePenaltyB = (b.fromDiskCache || b.fromPrefetchCache) ? 1 : 0;
+    if (cachePenaltyA !== cachePenaltyB) return cachePenaltyA - cachePenaltyB;
+    return b.ts - a.ts;
+  });
+  let lastError = null;
+  for (const match of matches) {
+    try {
+      const dataUrl = await getImageBodyViaDebugger(tabId, match.requestId, match.mimeType);
+      if (!dataUrl) {
+        removeRememberedImageRequest(session, match.requestId);
+        lastError = new Error('empty_cdp_body');
+        continue;
+      }
+      return {
+        ok: true,
+        path: 'cdp_network_body',
+        sourceUrl: candidate.sourceUrl,
+        requestId: match.requestId,
+        mimeType: match.mimeType || 'image/png',
+        dataUrl
+      };
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  try {
-    const dataUrl = await getImageBodyViaDebugger(tabId, latest.requestId, latest.mimeType);
-    if (!dataUrl) {
-      return {
-        ok: false,
-        reason: 'empty_cdp_body',
-        sourceUrl: candidate.sourceUrl,
-        requestId: latest.requestId
-      };
-    }
-    return {
-      ok: true,
-      path: 'cdp_network_body',
-      sourceUrl: candidate.sourceUrl,
-      requestId: latest.requestId,
-      mimeType: latest.mimeType || 'image/png',
-      dataUrl
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      reason: 'cdp_get_body_failed',
-      sourceUrl: candidate.sourceUrl,
-      requestId: latest.requestId,
-      error: error.message || String(error)
-    };
-  }
+  return {
+    ok: false,
+    reason: matches.length ? 'cdp_get_body_failed' : 'no_cdp_network_match',
+    sourceUrl: candidate.sourceUrl,
+    error: lastError ? (lastError.message || String(lastError)) : 'unknown_cdp_body_error'
+  };
+}
+
+function summarizePrepareState(session) {
+  return {
+    attached: session.attached,
+    networkEnabled: session.networkEnabled,
+    totalImageEvents: session.totalImageEvents,
+    lastImageEventAt: session.lastImageEventAt,
+    requiresReload: shouldRefreshImageEvents(session)
+  };
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -653,13 +723,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.action === 'wm_prepare') {
         const tabId = sender.tab?.id || request.tabId;
         if (typeof tabId !== 'number') throw new Error('missing_tab_id');
-        const session = await ensureDebugger(tabId);
+        const session = await refreshDebuggerSession(tabId);
+        const summary = summarizePrepareState(session);
         sendResponse({
           ok: true,
-          attached: session.attached,
-          networkEnabled: session.networkEnabled,
-          totalImageEvents: session.totalImageEvents,
-          requiresReload: session.totalImageEvents === 0,
+          attached: summary.attached,
+          networkEnabled: summary.networkEnabled,
+          totalImageEvents: summary.totalImageEvents,
+          lastImageEventAt: summary.lastImageEventAt,
+          staleImageEvents: summary.requiresReload,
+          requiresReload: false,
           diagnostics: session.diagnostics.slice(-5)
         });
         return;
@@ -673,6 +746,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           attached: session.attached,
           networkEnabled: session.networkEnabled,
           totalImageEvents: session.totalImageEvents,
+          lastImageEventAt: session.lastImageEventAt,
+          staleImageEvents: shouldRefreshImageEvents(session),
           diagnostics: session.diagnostics.slice(-10)
         });
         return;
@@ -800,10 +875,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.action === 'wm_debugger_detach') {
         const tabId = sender.tab?.id || request.tabId;
         if (typeof tabId === 'number') {
-          try { await debugDetach(tabId); } catch {}
+          const reason = String(request.reason || 'manual_debugger_detach').trim() || 'manual_debugger_detach';
           const session = getSession(tabId);
+          pushDiag(session, `detach_requested:${reason}`);
+          try { await debugDetach(tabId); } catch {}
           session.attached = false;
           session.networkEnabled = false;
+          session.attachedAt = 0;
+          resetSessionImageCache(session, `manual_debugger_detach_reset:${reason}`);
         }
         sendResponse({ ok: true });
         return;

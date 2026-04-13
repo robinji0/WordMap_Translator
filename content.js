@@ -642,6 +642,10 @@
     points = [];
     activePointerId = null;
 
+    if (restoreLauncher && isTouchEnvironment() && routerDebuggerPrepared && !routerCaptureInFlight) {
+      void releaseRouterDebugger('router_canvas_cleanup');
+    }
+
     if (restoreLauncher) updateMobileLauncher();
   }
 
@@ -1220,8 +1224,11 @@
 
   let wordmapProbeReady = false;
   let routerPrepareInFlight = false;
+  let routerDebuggerPrepared = false;
+  let routerCaptureInFlight = false;
   let routerMessageCounter = 1;
   const routerProbeRequests = new Map();
+  const routerSoftWarmRefs = new Set();
 
   function initSmartRouter() {
     window.addEventListener('message', handleRouterProbeMessage);
@@ -1239,7 +1246,7 @@
       wordmapProbeReady = true;
       return;
     }
-    if (event.data.source === 'WMV_PROBE' && event.data.type === 'WMV_EXPORT_BLOB_RESULT') {
+    if (event.data.source === 'WMV_PROBE' && event.data.requestId) {
       const pending = routerProbeRequests.get(event.data.requestId);
       if (!pending) return;
       routerProbeRequests.delete(event.data.requestId);
@@ -1284,6 +1291,117 @@
     });
   }
 
+  function requestProbeWarmResource(candidate, timeout = 1500) {
+    if (!wordmapProbeReady || !candidate || !candidate.sourceUrl) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const requestId = `router-warm-${routerMessageCounter++}`;
+      const timer = window.setTimeout(() => {
+        routerProbeRequests.delete(requestId);
+        resolve(null);
+      }, timeout + 200);
+      routerProbeRequests.set(requestId, {
+        resolve: (payload) => {
+          window.clearTimeout(timer);
+          resolve(payload);
+        }
+      });
+      window.postMessage({
+        source: 'WMV_CONTENT',
+        type: 'WMV_WARM_RESOURCE',
+        candidate,
+        requestId,
+        timeout
+      }, '*');
+    });
+  }
+
+  function releaseRouterDebugger(reason = 'router_capture_complete') {
+    if (!routerDebuggerPrepared) return Promise.resolve();
+    routerDebuggerPrepared = false;
+    return routerSend({ action: 'wm_debugger_detach', reason }).catch(() => null);
+  }
+
+  function softWarmRouterUrl(url, timeout = 1200) {
+    if (!url || url.startsWith('blob:') || url.startsWith('data:')) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = 0;
+      const img = new Image();
+      routerSoftWarmRefs.add(img);
+
+      const finalize = (result) => {
+        if (settled) return;
+        settled = true;
+        if (timer) window.clearTimeout(timer);
+        img.onload = null;
+        img.onerror = null;
+        routerSoftWarmRefs.delete(img);
+        resolve(result);
+      };
+
+      timer = window.setTimeout(() => finalize(false), timeout);
+      img.onload = () => finalize(true);
+      img.onerror = () => finalize(false);
+
+      try {
+        img.decoding = 'async';
+      } catch {
+        // ignore
+      }
+
+      try {
+        img.src = url;
+      } catch {
+        finalize(false);
+        return;
+      }
+
+      try {
+        fetch(url, {
+          mode: 'no-cors',
+          credentials: 'include',
+          cache: 'reload'
+        }).catch(() => null).finally(() => {
+          window.setTimeout(() => finalize(true), 80);
+        });
+      } catch {
+        // ignore
+      }
+    });
+  }
+
+  async function softWarmRouterCandidates(candidates, timeout = 1200) {
+    const uniqueCandidates = [];
+    const seen = new Set();
+    (Array.isArray(candidates) ? candidates : []).forEach((candidate) => {
+      const url = candidate && candidate.sourceUrl;
+      if (!url || url.startsWith('blob:') || url.startsWith('data:')) return;
+      if (seen.has(url)) return;
+      seen.add(url);
+      uniqueCandidates.push(candidate);
+    });
+
+    if (!uniqueCandidates.length) {
+      return { attempted: 0, succeeded: 0, pageProbe: false };
+    }
+
+    const limited = uniqueCandidates.slice(0, 6);
+    const useProbe = wordmapProbeReady;
+    const results = await Promise.allSettled(
+      limited.map((candidate) => (
+        useProbe
+          ? requestProbeWarmResource(candidate, timeout)
+          : softWarmRouterUrl(candidate.sourceUrl, timeout).then((ok) => ({ ok, reason: ok ? 'content_soft_warm' : 'content_soft_warm_failed' }))
+      ))
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    return {
+      attempted: limited.length,
+      succeeded: results.filter((item) => item.status === 'fulfilled' && item.value && item.value.ok).length,
+      pageProbe: useProbe
+    };
+  }
+
   async function prepareRouterAndOpen(mode) {
     if (routerPrepareInFlight) return;
     routerPrepareInFlight = true;
@@ -1311,6 +1429,7 @@
       if (!prep || prep.ok === false) {
         throw new Error(prep && prep.error ? prep.error : 'router_prepare_failed');
       }
+      routerDebuggerPrepared = true;
 
       const armed = sessionStorage.getItem(WORDMAP_ROUTER_KEYS.RELOAD_ARMED);
       if (prep.requiresReload && armed !== 'done') {
@@ -1334,6 +1453,7 @@
       routerWarmupTimer = null;
       openDrawCanvas();
     } catch (error) {
+      routerDebuggerPrepared = false;
       window.clearTimeout(routerWarmupTimer);
       routerWarmupTimer = null;
       updateMobileLauncher();
@@ -1478,7 +1598,11 @@
     cleanupCanvas({ restoreLauncher: false });
 
     if (isTouchEnvironment()) {
-      runSmartResourceCapture(selectionBounds).finally(() => updateMobileLauncher());
+      routerCaptureInFlight = true;
+      runSmartResourceCapture(selectionBounds).finally(() => {
+        routerCaptureInFlight = false;
+        releaseRouterDebugger('router_capture_complete').finally(() => updateMobileLauncher());
+      });
       return;
     }
 
@@ -1509,9 +1633,10 @@
       state: 'progress'
     }, lastX, lastY);
 
-    const debugStatus = await routerSend({ action: 'wm_get_debug_status' }).catch(() => ({ ok: false, attached: false, totalImageEvents: 0 }));
+    let debugStatus = await routerSend({ action: 'wm_get_debug_status' }).catch(() => ({ ok: false, attached: false, totalImageEvents: 0 }));
     const rawCandidates = collectRouterCandidates(selectionBounds);
     const extractedText = extractTextFromSelection(selectionBounds);
+    let warmStats = null;
 
     if (!rawCandidates.length && extractedText) {
       showStatusCard({
@@ -1524,6 +1649,24 @@
     }
 
     const candidates = await hydrateRouterBlobCandidates(rawCandidates);
+    if (debugStatus && debugStatus.ok !== false && debugStatus.staleImageEvents) {
+      showStatusCard({
+        title: WordMapI18n.t(currentUiLang, 'statusRouterWarmupTitle'),
+        detail: WordMapI18n.t(currentUiLang, 'statusRouterWarmupDetail'),
+        state: 'progress'
+      }, lastX, lastY);
+      warmStats = await softWarmRouterCandidates(candidates);
+      debugStatus = await routerSend({ action: 'wm_get_debug_status' }).catch(() => debugStatus);
+      if (warmStats && warmStats.attempted > 0 && Number(debugStatus.totalImageEvents || 0) === 0) {
+        const retryStats = await softWarmRouterCandidates(candidates, 1800);
+        warmStats = {
+          attempted: Number(warmStats.attempted || 0) + Number(retryStats && retryStats.attempted || 0),
+          succeeded: Number(warmStats.succeeded || 0) + Number(retryStats && retryStats.succeeded || 0),
+          pageProbe: !!(warmStats.pageProbe || (retryStats && retryStats.pageProbe))
+        };
+        debugStatus = await routerSend({ action: 'wm_get_debug_status' }).catch(() => debugStatus);
+      }
+    }
     const resolvedResponse = await routerSend({ action: 'wm_resolve_resources', candidates }).catch((error) => ({ ok: false, error: error.message || String(error) }));
     const resolvedMap = new Map(((resolvedResponse && resolvedResponse.resolved) || []).map((item) => [item.candidateId, item.resource]));
 
@@ -1580,6 +1723,7 @@
     renderRouterDiagnostics({
       selection: selectionBounds,
       debugStatus: debugStatus && debugStatus.ok !== false ? debugStatus : { attached: false, totalImageEvents: 0 },
+      warmStats,
       previews,
       errorMessage: WordMapI18n.t(currentUiLang, 'errorRouterNoPreview')
     });
@@ -1613,6 +1757,12 @@
           id: `cand-${candidates.size + 1}`,
           type: 'img',
           sourceUrl: el.currentSrc,
+          src: el.getAttribute('src') || el.currentSrc,
+          srcset: el.getAttribute('srcset') || '',
+          sizes: el.getAttribute('sizes') || '',
+          crossOrigin: el.crossOrigin || '',
+          referrerPolicy: el.referrerPolicy || '',
+          fetchPriority: el.fetchPriority || '',
           rect: box,
           overlapArea: overlap.width * overlap.height,
           naturalWidth: el.naturalWidth || 0,
@@ -2042,13 +2192,23 @@
 
     const summary = createSection(WordMapI18n.t(currentUiLang, 'resultSectionDiagnostics'));
     const debug = payload.debugStatus || {};
+    const recentDiag = Array.isArray(debug.diagnostics) && debug.diagnostics.length
+      ? debug.diagnostics[debug.diagnostics.length - 1].message
+      : '';
+    const warmStats = payload.warmStats || null;
     const details = document.createElement('div');
     details.className = 'wordmap-meta-line';
-    details.innerHTML = `
-      <strong>${WordMapI18n.t(currentUiLang, 'diagnosticSelection')}</strong> · ${Math.round(payload.selection.width)} × ${Math.round(payload.selection.height)}<br>
-      <strong>Debugger</strong> · ${debug.attached ? 'attached' : 'not attached'}<br>
-      <strong>Network</strong> · ${Number(debug.totalImageEvents || 0)} image events
-    `;
+    const lines = [
+      `<strong>${WordMapI18n.t(currentUiLang, 'diagnosticSelection')}</strong> · ${Math.round(payload.selection.width)} × ${Math.round(payload.selection.height)}`,
+      `<strong>Debugger</strong> · ${debug.attached ? 'attached' : 'not attached'}`,
+      `<strong>Network</strong> · ${Number(debug.totalImageEvents || 0)} image events`
+    ];
+    if (debug.staleImageEvents) lines.push('<strong>Session</strong> · warmup needed before capture');
+    if (warmStats && warmStats.attempted) {
+      lines.push(`<strong>Warmup</strong> · ${warmStats.succeeded}/${warmStats.attempted} dispatched${warmStats.pageProbe ? ' via page probe' : ''}`);
+    }
+    if (recentDiag) lines.push(`<strong>Latest</strong> · ${escapeHtml(recentDiag)}`);
+    details.innerHTML = lines.join('<br>');
     summary.appendChild(details);
     content.appendChild(summary);
 
