@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
 
 let lastActiveWebTabId = null;
 const sessions = new Map();
+const ensureDebuggerTasks = new Map();
 
 function dbgTarget(tabId) {
   return { tabId };
@@ -83,13 +84,32 @@ function sendCommand(tabId, method, params = {}) {
   });
 }
 
+function isAlreadyAttachedError(error) {
+  const message = String(error && error.message ? error.message : error || '').toLowerCase();
+  return (
+    message.includes('already attached') ||
+    message.includes('another debugger') ||
+    (message.includes('debugger') && message.includes('attached'))
+  );
+}
+
 async function ensureDebugger(tabId) {
+  if (ensureDebuggerTasks.has(tabId)) {
+    return ensureDebuggerTasks.get(tabId);
+  }
+
+  const task = (async () => {
   const session = getSession(tabId);
   if (!session.attached) {
-    await debugAttach(tabId);
+    try {
+      await debugAttach(tabId);
+      pushDiag(session, 'debugger_attached');
+    } catch (error) {
+      if (!isAlreadyAttachedError(error)) throw error;
+      pushDiag(session, 'debugger_attach_reused_existing');
+    }
     session.attached = true;
     session.attachedAt = Date.now();
-    pushDiag(session, 'debugger_attached');
   }
   if (!session.networkEnabled) {
     await sendCommand(tabId, 'Network.enable');
@@ -102,6 +122,12 @@ async function ensureDebugger(tabId) {
     pushDiag(session, 'network_enabled');
   }
   return session;
+  })().finally(() => {
+    ensureDebuggerTasks.delete(tabId);
+  });
+
+  ensureDebuggerTasks.set(tabId, task);
+  return task;
 }
 
 function rememberImageResponse(tabId, payload) {
